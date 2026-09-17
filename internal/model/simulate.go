@@ -14,13 +14,13 @@ import (
 // in the stock's own history survive), and a separate draw represents the
 // earnings jump on the one day it happens.
 type SimConfig struct {
-	Paths       int
-	Horizon     int     // trading days to simulate
-	DailyDrift  float64 // expected daily log return
-	StartVar    float64 // one-step-ahead conditional variance
-	EarningsIdx int     // day index of the earnings jump, 0 for none
-	JumpStdev   float64 // standard deviation of the earnings-day return
-	Seed        uint64
+	Paths        int
+	Horizon      int     // trading days to simulate
+	DailyDrift   float64 // expected daily log return
+	StartVar     float64 // one-step-ahead conditional variance
+	EarningsDays []int   // day indices carrying an earnings jump
+	JumpStdev    float64 // standard deviation of an earnings-day return
+	Seed         uint64
 }
 
 // Sim holds simulated price paths as ratios to today's spot, indexed by day
@@ -68,6 +68,12 @@ func Simulate(g GARCH, resid []float64, cfg SimConfig) *Sim {
 	if startVar <= 0 {
 		startVar = g.UncondVar
 	}
+	isEarnings := make([]bool, cfg.Horizon+1)
+	for _, d := range cfg.EarningsDays {
+		if d > 0 && d <= cfg.Horizon {
+			isEarnings[d] = true
+		}
+	}
 	workers := min(runtime.NumCPU(), cfg.Paths)
 	var wg sync.WaitGroup
 	chunk := (cfg.Paths + workers - 1) / workers
@@ -90,7 +96,7 @@ func Simulate(g GARCH, resid []float64, cfg SimConfig) *Sim {
 					z := resid[rng.IntN(len(resid))]
 					shock := math.Sqrt(sigma2) * z
 					r := cfg.DailyDrift + shock
-					if d == cfg.EarningsIdx && cfg.JumpStdev > 0 {
+					if isEarnings[d] && cfg.JumpStdev > 0 {
 						r += cfg.JumpStdev * rng.NormFloat64()
 					}
 					logPrice += r
