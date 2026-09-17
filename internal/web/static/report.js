@@ -11,6 +11,13 @@ export function rule(char = '─') {
   return char.repeat(W);
 }
 
+// validEmail mirrors the check the server makes, so a typo is caught before
+// a request is sent rather than after.
+export function validEmail(address) {
+  return typeof address === 'string' && address.length <= 254 &&
+    /^[^@\s]+@[^@\s.]+(\.[^@\s.]+)+$/.test(address);
+}
+
 export function banner(view) {
   const stance = view.stance.toUpperCase();
   const score = `${view.score >= 0 ? '+' : ''}${view.score.toFixed(2)}`;
@@ -40,7 +47,8 @@ export function symbolColumns(symbols) {
 export function lines(view, catalog) {
   const out = [];
   out.push(...banner(view));
-  out.push(`\x01 SPOT ${view.spot.toFixed(2)}   AS OF ${view.asOf}   RUN ${view.elapsed}`);
+  const run = view.cached ? `${view.elapsed} (FROM CACHE)` : view.elapsed;
+  out.push(`\x01 SPOT ${view.spot.toFixed(2)}   AS OF ${view.asOf}   RUN ${run}`);
   out.push('');
 
   out.push('\x02 FORECAST');

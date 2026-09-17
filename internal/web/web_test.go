@@ -6,6 +6,7 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
@@ -42,17 +43,20 @@ func readEvents(t *testing.T, url string) (events []string, data []string) {
 }
 
 func TestAnalyzeStreamsStagesThenResult(t *testing.T) {
-	srv := testServer(func(ctx context.Context, symbol string, p Progress) (*View, error) {
-		if symbol != "AAPL" {
-			t.Errorf("symbol = %q, want AAPL uppercased", symbol)
+	srv := testServer(func(ctx context.Context, req Request, p Progress) (*View, error) {
+		if req.Symbol != "AAPL" {
+			t.Errorf("symbol = %q, want AAPL uppercased", req.Symbol)
+		}
+		if req.Email != "trader@example.com" {
+			t.Errorf("email = %q, not passed through", req.Email)
 		}
 		p("fitting model", 0.4)
 		p("simulating paths", 0.8)
-		return &View{Symbol: symbol, Stance: "bullish", Score: 0.5}, nil
+		return &View{Symbol: req.Symbol, Stance: "bullish", Score: 0.5}, nil
 	})
 	defer srv.Close()
 
-	events, data := readEvents(t, srv.URL+"/api/analyze?symbol=aapl")
+	events, data := readEvents(t, srv.URL+"/api/analyze?symbol=aapl&email=trader@example.com")
 	if len(events) != 4 {
 		t.Fatalf("events = %v, want three stages and one result", events)
 	}
@@ -73,13 +77,13 @@ func TestAnalyzeStreamsStagesThenResult(t *testing.T) {
 }
 
 func TestAnalyzeRejectsBadSymbols(t *testing.T) {
-	srv := testServer(func(context.Context, string, Progress) (*View, error) {
+	srv := testServer(func(context.Context, Request, Progress) (*View, error) {
 		t.Fatal("analyzer should not run for a bad symbol")
 		return nil, nil
 	})
 	defer srv.Close()
 	for _, bad := range []string{"", "TOOLONGSYM", "../etc", "A B", "AAPL;DROP"} {
-		resp, err := http.Get(srv.URL + "/api/analyze?symbol=" + bad)
+		resp, err := http.Get(srv.URL + "/api/analyze?symbol=" + bad + "&email=a@b.com")
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -91,11 +95,11 @@ func TestAnalyzeRejectsBadSymbols(t *testing.T) {
 }
 
 func TestAnalyzeSendsErrorEvent(t *testing.T) {
-	srv := testServer(func(context.Context, string, Progress) (*View, error) {
+	srv := testServer(func(context.Context, Request, Progress) (*View, error) {
 		return nil, errors.New("nasdaq: NOPE: symbol not found")
 	})
 	defer srv.Close()
-	events, data := readEvents(t, srv.URL+"/api/analyze?symbol=NOPE")
+	events, data := readEvents(t, srv.URL+"/api/analyze?symbol=NOPE&email=a@b.com")
 	if events[len(events)-1] != "error" {
 		t.Fatalf("events = %v, want an error last", events)
 	}
@@ -120,7 +124,7 @@ func TestUserMessageStaysReadable(t *testing.T) {
 }
 
 func TestIndexIsServed(t *testing.T) {
-	srv := testServer(func(context.Context, string, Progress) (*View, error) { return nil, nil })
+	srv := testServer(func(context.Context, Request, Progress) (*View, error) { return nil, nil })
 	defer srv.Close()
 	resp, err := http.Get(srv.URL + "/")
 	if err != nil {
@@ -135,17 +139,17 @@ func TestIndexIsServed(t *testing.T) {
 func TestConcurrencyIsBounded(t *testing.T) {
 	release := make(chan struct{})
 	started := make(chan struct{}, 8)
-	s := &Server{MaxConcurrent: 2, Analyze: func(ctx context.Context, symbol string, p Progress) (*View, error) {
+	s := &Server{MaxConcurrent: 2, Analyze: func(ctx context.Context, req Request, p Progress) (*View, error) {
 		started <- struct{}{}
 		<-release
-		return &View{Symbol: symbol}, nil
+		return &View{Symbol: req.Symbol}, nil
 	}}
 	srv := httptest.NewServer(s.Handler())
 	defer srv.Close()
 
 	for i := 0; i < 4; i++ {
 		go func() {
-			resp, err := http.Get(srv.URL + "/api/analyze?symbol=AAPL")
+			resp, err := http.Get(srv.URL + "/api/analyze?symbol=AAPL&email=a@b.com")
 			if err == nil {
 				resp.Body.Close()
 			}
@@ -221,5 +225,38 @@ func TestModelWarningsDropDataNotes(t *testing.T) {
 	})
 	if len(got) != 1 || !strings.Contains(got[0], "earnings") {
 		t.Fatalf("got %v", got)
+	}
+}
+
+func TestAnalyzeRequiresAnEmail(t *testing.T) {
+	srv := testServer(func(context.Context, Request, Progress) (*View, error) {
+		t.Fatal("analyzer should not run without an email")
+		return nil, nil
+	})
+	defer srv.Close()
+	for _, bad := range []string{"", "nobody", "no@domain", "a b@example.com", "@example.com"} {
+		resp, err := http.Get(srv.URL + "/api/analyze?symbol=AAPL&email=" + url.QueryEscape(bad))
+		if err != nil {
+			t.Fatal(err)
+		}
+		resp.Body.Close()
+		if resp.StatusCode != http.StatusBadRequest {
+			t.Errorf("email %q returned %d, want 400", bad, resp.StatusCode)
+		}
+	}
+}
+
+func TestValidEmail(t *testing.T) {
+	good := []string{"a@b.co", "first.last@example.com", "x+tag@sub.example.co.uk"}
+	bad := []string{"", "nobody", "a@b", "a b@example.com", "two@@example.com", strings.Repeat("x", 250) + "@example.com"}
+	for _, e := range good {
+		if !ValidEmail(e) {
+			t.Errorf("%q should be accepted", e)
+		}
+	}
+	for _, e := range bad {
+		if ValidEmail(e) {
+			t.Errorf("%q should be rejected", e)
+		}
 	}
 }

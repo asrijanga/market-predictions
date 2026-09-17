@@ -10,6 +10,12 @@ import (
 	"github.com/asrijanga/market-predictions/internal/quant"
 )
 
+// Version identifies the modelling pipeline. Anything that changes the
+// answer for the same inputs - a new signal, a different weight, a change
+// to the simulation or the ranking - must bump it, because cached results
+// are keyed on it.
+const Version = "2026-09-17.1"
+
 // Drift modes.
 const (
 	// DriftCapped is the default: the fitted trend, but capped at a modest
