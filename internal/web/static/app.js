@@ -1,191 +1,30 @@
-// MKTPREDICT 8000 - a machine that answers one question at a time.
-import * as THREE from 'three';
-import { Terminal } from './terminal.js';
-import { makeScreenMaterial } from './crt.js';
-import { PathFan } from './loading.js';
+// MKTPREDICT - a machine that answers one question at a time.
+//
+// The page works two ways from the same code. Served by `mktpredict serve`
+// it streams a live analysis over server-sent events. Published as a static
+// site it reads answers computed at build time, because a browser cannot
+// reach the market data providers directly: none of them send CORS headers.
 import * as report from './report.js';
 
-const scene = new THREE.Scene();
-scene.background = new THREE.Color(0x05040a);
-scene.fog = new THREE.Fog(0x05040a, 7, 24);
-
-const camera = new THREE.PerspectiveCamera(42, innerWidth / innerHeight, 0.1, 100);
-// The default frame puts the screen large enough to read; scrolling pulls
-// back far enough to see the whole machine in its room.
-const view = { orbit: 5.9, minOrbit: 4.6, maxOrbit: 15 };
-
-// The tube is half again as wide as it is tall, so a portrait phone runs
-// out of width long before it runs out of height. A perspective camera is
-// framed by its *vertical* angle, which means holding one distance for
-// every viewport crops the sides off exactly where the text lives. Solve
-// instead for the distance at which both axes of the glass fit, and treat
-// that as the closest the view may come.
-const SCREEN = { w: 3.78, h: 2.8, z: 0.8 };
-function fitOrbit() {
-  const margin = 1.08; // a little room so the bezel is not flush with the edge
-  const half = Math.tan(THREE.MathUtils.degToRad(camera.fov) / 2);
-  const forHeight = (SCREEN.h / 2) * margin / half;
-  const forWidth = (SCREEN.w / 2) * margin / (half * camera.aspect);
-  return Math.max(forHeight, forWidth) + SCREEN.z;
-}
-
-// Reframe whenever the viewport changes: a rotation from portrait to
-// landscape is a resize, and the two want very different distances.
-function fitView() {
-  const wasFramed = view.orbit <= view.minOrbit + 1e-3;
-  view.minOrbit = fitOrbit();
-  view.maxOrbit = Math.max(15, view.minOrbit * 1.6);
-  // Opening at the closest fitting distance keeps the text as large as it
-  // can be; a wide viewport still gets the roomier default.
-  view.orbit = wasFramed
-    ? view.minOrbit
-    : THREE.MathUtils.clamp(view.orbit, view.minOrbit, view.maxOrbit);
-}
-fitView();
-camera.position.set(0, 1.1, view.orbit);
-
-const renderer = new THREE.WebGLRenderer({ antialias: true });
-// Text on a curved texture needs the pixels, so do not skimp here.
-renderer.setPixelRatio(Math.min(devicePixelRatio, 2.5));
-renderer.setSize(innerWidth, innerHeight);
-renderer.toneMapping = THREE.ACESFilmicToneMapping;
-renderer.toneMappingExposure = 1.1;
-document.body.appendChild(renderer.domElement);
-
-// ---------------------------------------------------------------- the room
-
-const grid = new THREE.GridHelper(80, 80, 0x1c6f4a, 0x123a2c);
-grid.position.y = -1.35;
-grid.material.transparent = true;
-grid.material.opacity = 0.32;
-scene.add(grid);
-
-const desk = new THREE.Mesh(
-  new THREE.BoxGeometry(9, 0.22, 4.4),
-  new THREE.MeshStandardMaterial({ color: 0x16121b, roughness: 0.75, metalness: 0.1 })
-);
-desk.position.set(0, -1.24, 0.6);
-scene.add(desk);
-
-scene.add(new THREE.AmbientLight(0x3b4657, 1.35));
-const keyLight = new THREE.DirectionalLight(0xa8bcdc, 1.05);
-keyLight.position.set(-4, 6, 5);
-scene.add(keyLight);
-const rimLight = new THREE.PointLight(0xff3d9a, 18, 16, 2);
-rimLight.position.set(4.5, 1.6, -3.4);
-scene.add(rimLight);
-// The screen lights the room, so its glow is a light of its own.
-const screenLight = new THREE.PointLight(0x46ff9b, 0, 7, 2);
-screenLight.position.set(0, 0.55, 1.3);
-scene.add(screenLight);
-
-// ------------------------------------------------------------- the monitor
-
-const monitor = new THREE.Group();
-scene.add(monitor);
-
-const caseMat = new THREE.MeshStandardMaterial({ color: 0xd6cbb0, roughness: 0.72, metalness: 0.05 });
-const darkMat = new THREE.MeshStandardMaterial({ color: 0x191713, roughness: 0.9 });
-
-const shell = new THREE.Mesh(new THREE.BoxGeometry(4.5, 3.5, 3.1), caseMat);
-shell.position.z = -0.9;
-monitor.add(shell);
-
-// The front bezel is a touch wider, the way moulded plastic cases were.
-const bezel = new THREE.Mesh(new THREE.BoxGeometry(4.66, 3.62, 0.34), caseMat);
-bezel.position.z = 0.62;
-monitor.add(bezel);
-
-const recess = new THREE.Mesh(new THREE.BoxGeometry(3.92, 2.92, 0.12), darkMat);
-recess.position.z = 0.76;
-monitor.add(recess);
-
-const terminal = new Terminal();
-const { material: screenMat, texture: screenTex } = makeScreenMaterial(terminal.canvas);
-const screen = new THREE.Mesh(new THREE.PlaneGeometry(3.78, 2.8, 24, 24), screenMat);
-// A gentle bulge, because the glass was never flat.
-{
-  const pos = screen.geometry.attributes.position;
-  for (let i = 0; i < pos.count; i++) {
-    const x = pos.getX(i) / 1.89, y = pos.getY(i) / 1.4;
-    pos.setZ(i, (1 - x * x * 0.45 - y * y * 0.45) * 0.09);
-  }
-  screen.geometry.computeVertexNormals();
-}
-screen.position.z = 0.8;
-monitor.add(screen);
-
-// Vents, a brand plate and a power lamp.
-for (let i = 0; i < 9; i++) {
-  const vent = new THREE.Mesh(new THREE.BoxGeometry(2.6, 0.045, 0.05), darkMat);
-  vent.position.set(0, 1.86 - i * 0.075, -0.85);
-  vent.rotation.x = Math.PI / 2;
-  monitor.add(vent);
-}
-const plate = new THREE.Mesh(new THREE.BoxGeometry(1.5, 0.2, 0.04), darkMat);
-plate.position.set(-1.35, -1.58, 0.79);
-monitor.add(plate);
-const lamp = new THREE.Mesh(
-  new THREE.SphereGeometry(0.055, 16, 16),
-  new THREE.MeshStandardMaterial({ color: 0x220a06, emissive: 0xff5522, emissiveIntensity: 0 })
-);
-lamp.position.set(1.72, -1.58, 0.8);
-monitor.add(lamp);
-
-const stand = new THREE.Mesh(new THREE.CylinderGeometry(0.55, 0.95, 0.42, 24), caseMat);
-stand.position.set(0, -2.0, -0.4);
-monitor.add(stand);
-monitor.position.y = 0.55;
-
-// ------------------------------------------------------------- the keyboard
-
-const keyboard = new THREE.Group();
-const kbBase = new THREE.Mesh(new THREE.BoxGeometry(4.6, 0.22, 1.5), caseMat);
-keyboard.add(kbBase);
-const keyGeo = new THREE.BoxGeometry(0.2, 0.08, 0.2);
-const keyMat = new THREE.MeshStandardMaterial({ color: 0x2b2822, roughness: 0.8 });
-const keys = new THREE.InstancedMesh(keyGeo, keyMat, 15 * 5);
-{
-  const m = new THREE.Matrix4();
-  let i = 0;
-  for (let row = 0; row < 5; row++) {
-    for (let col = 0; col < 15; col++) {
-      m.setPosition(-1.85 + col * 0.265 + row * 0.045, 0.15, -0.48 + row * 0.24);
-      keys.setMatrixAt(i++, m);
-    }
-  }
-  keys.instanceMatrix.needsUpdate = true;
-}
-keyboard.add(keys);
-keyboard.position.set(0, -1.05, 2.5);
-keyboard.rotation.x = -0.06;
-scene.add(keyboard);
-
-// ------------------------------------------------------------------- state
-
-const fan = new PathFan();
-const proxy = document.getElementById('keyboard-proxy');
-const hint = document.getElementById('hint');
-const gate = document.getElementById('boot-gate');
-
-// There is no wheel on a touch screen, and naming a gesture nobody can
-// perform only pushes the line onto a second row.
-if (matchMedia('(pointer: coarse)').matches) {
-  hint.textContent = 'tap to type \u00b7 enter to run';
-}
+const form = document.getElementById('search-form');
+const input = document.getElementById('symbol');
+const suggestBox = document.getElementById('suggestions');
+const hint = document.getElementById('search-hint');
+const meta = document.getElementById('catalog-meta');
+const result = document.getElementById('result');
 
 const state = {
-  mode: 'off',       // off | booting | ready | working
-  power: 0,
-  input: '',
+  catalog: null,   // null means a live server is answering
+  matches: [],
+  active: -1,
   stream: null,
-  keyFlash: 0,
-  listPage: 0,
-  // catalog is set when the page is served statically: a published site
-  // cannot run the model or reach the data providers from a browser, so it
-  // ships the answers instead.
-  catalog: null,
+  current: '',
 };
+
+const SYMBOL = /^[A-Z][A-Z.\-]{0,5}$/;
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+
+// ------------------------------------------------------------- the catalog
 
 async function loadCatalog() {
   try {
@@ -194,232 +33,253 @@ async function loadCatalog() {
     const catalog = await res.json();
     return Array.isArray(catalog.symbols) && catalog.symbols.length ? catalog : null;
   } catch {
-    return null;   // no catalog means a live server is answering
+    return null;
   }
 }
 
-function typeOut(lines, done) {
-  let i = 0;
-  const tick = () => {
-    if (i >= lines.length) { done?.(); return; }
-    terminal.write(lines[i++]);
-    setTimeout(tick, 70);
-  };
-  tick();
+function describeCatalog() {
+  if (!state.catalog) {
+    meta.textContent = 'live · computed on demand';
+    hint.textContent = 'Any listed US stock with options.';
+    return;
+  }
+  const n = state.catalog.symbols.length;
+  meta.textContent = `${n} symbols · ${state.catalog.asOf}`;
+
+  const examples = ['AAPL', 'NVDA', 'MSFT'].filter(
+    (s) => state.catalog.symbols.some((e) => e.symbol === s));
+  hint.replaceChildren(
+    document.createTextNode(
+      `${n} stocks on file${examples.length ? `. Try ${examples.join(', ')}, or pick one below.` : '.'}`));
 }
 
-async function powerOn() {
-  if (state.mode !== 'off') return;
-  state.mode = 'booting';
-  gate.classList.add('gone');
-  lamp.material.emissiveIntensity = 2.4;
-  terminal.clear();
-  state.catalog = await loadCatalog();
-  typeOut(report.boot(state.catalog), () => {
-    state.mode = 'ready';
-    terminal.setPrompt('\u25b6 ');
-    hint.classList.remove('gone');
-  });
-  proxy.focus({ preventScroll: true });
+// ---------------------------------------------------------- the suggestion
+
+function renderSuggestions() {
+  if (!state.matches.length) {
+    suggestBox.hidden = true;
+    suggestBox.replaceChildren();
+    input.setAttribute('aria-expanded', 'false');
+    return;
+  }
+  suggestBox.replaceChildren(...state.matches.map((entry, i) => {
+    const li = document.createElement('li');
+    li.className = 'suggest__item';
+    li.role = 'option';
+    li.setAttribute('aria-selected', String(i === state.active));
+
+    const sym = document.createElement('span');
+    sym.className = 'suggest__sym';
+    sym.textContent = entry.symbol;
+
+    const stance = document.createElement('span');
+    stance.className = 'suggest__stance';
+    stance.textContent = entry.stance;
+
+    li.append(sym, stance);
+    // pointerdown fires before the input loses focus, so the click is not
+    // swallowed by the blur that closes the list.
+    li.addEventListener('pointerdown', (e) => { e.preventDefault(); run(entry.symbol); });
+    return li;
+  }));
+  suggestBox.hidden = false;
+  input.setAttribute('aria-expanded', 'true');
 }
 
-function submit(symbol) {
-  if (state.mode !== 'ready' || !symbol) return;
-  const clean = symbol.toUpperCase().replace(/[^A-Z.\-]/g, '');
-  if (!clean) return;
+function closeSuggestions() {
+  state.matches = [];
+  state.active = -1;
+  renderSuggestions();
+}
 
-  // LIST pages through the catalogue; it is a command, not a ticker.
-  if (clean === 'LIST' && state.catalog) {
-    state.input = '';
-    terminal.setInput('');
-    terminal.clear();
-    finish(report.listPage(state.catalog, state.listPage++));
+input.addEventListener('input', () => {
+  state.matches = report.suggestions(input.value, state.catalog);
+  state.active = -1;
+  renderSuggestions();
+});
+
+input.addEventListener('keydown', (e) => {
+  if (e.key === 'Escape') { closeSuggestions(); return; }
+  if (!state.matches.length) return;
+  if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {
+    e.preventDefault();
+    const step = e.key === 'ArrowDown' ? 1 : -1;
+    state.active = (state.active + step + state.matches.length) % state.matches.length;
+    renderSuggestions();
+  }
+});
+
+input.addEventListener('blur', () => setTimeout(closeSuggestions, 120));
+
+form.addEventListener('submit', (e) => {
+  e.preventDefault();
+  const picked = state.active >= 0 ? state.matches[state.active]?.symbol : null;
+  run(picked ?? input.value);
+});
+
+// -------------------------------------------------------------- the browse
+
+// A few hundred chips make a page nobody scrolls, so the resting view
+// shows a first screenful and offers the rest.
+const PREVIEW = 60;
+
+function showBrowse({ all = false } = {}) {
+  closeSuggestions();
+  if (!state.catalog) return;
+  const total = state.catalog.symbols.length;
+  const shown = all ? state.catalog.symbols : state.catalog.symbols.slice(0, PREVIEW);
+
+  const wrap = document.createElement('section');
+  wrap.className = 'section reveal';
+
+  const title = document.createElement('h2');
+  title.className = 'section__title';
+  title.textContent = all || total <= PREVIEW
+    ? `All ${total} symbols`
+    : `${total} symbols on file`;
+
+  const list = document.createElement('ul');
+  list.className = 'chips';
+  for (const entry of shown) {
+    const li = document.createElement('li');
+    li.append(report.chip(entry, run));
+    list.append(li);
+  }
+  wrap.append(title, list);
+
+  if (!all && total > PREVIEW) {
+    const more = document.createElement('p');
+    more.className = 'search__hint';
+    const button = document.createElement('button');
+    button.type = 'button';
+    button.textContent = `show all ${total}`;
+    button.addEventListener('click', () => showBrowse({ all: true }));
+    more.append(document.createTextNode(`Showing ${shown.length} of ${total} \u2014 `), button);
+    wrap.append(more);
+  }
+  result.replaceChildren(wrap);
+}
+
+// ------------------------------------------------------------- the running
+
+function show(node) {
+  result.replaceChildren(node);
+}
+
+async function run(raw, { push = true } = {}) {
+  const symbol = String(raw ?? '').trim().toUpperCase().replace(/[^A-Z.\-]/g, '');
+  closeSuggestions();
+  input.blur();
+  if (!SYMBOL.test(symbol)) {
+    show(report.message('Type a ticker', 'Something like AAPL, NVDA or MSFT.'));
     return;
   }
 
-  state.mode = 'working';
-  state.input = '';
-  terminal.setInput('');
-  terminal.setPrompt('');
-  terminal.clear();
-  terminal.write(`\x02 ANALYSING ${clean}`);
-  terminal.write('');
-  hint.classList.add('gone');
+  state.stream?.close();
+  state.stream = null;
+  state.current = symbol;
+  input.value = symbol;
+  if (push) {
+    const url = `${location.pathname}?s=${encodeURIComponent(symbol)}`;
+    if (location.search !== `?s=${symbol}`) history.pushState({ symbol }, '', url);
+  }
+  document.title = `${symbol} — MKTPREDICT`;
 
-  const nextFan = new PathFan();
-  terminal.setOverlay((ctx, canvas, time) => nextFan.draw(ctx, canvas, time));
+  const progress = report.working(symbol);
+  result.setAttribute('aria-busy', 'true');
+  show(progress.node);
 
-  if (state.catalog) { runStatic(clean, nextFan); return; }
-
-  const stream = new EventSource(`/api/analyze?symbol=${encodeURIComponent(clean)}`);
-  state.stream = stream;
-
-  stream.addEventListener('stage', (e) => {
-    const { stage, fraction } = JSON.parse(e.data);
-    nextFan.setStage(stage, fraction);
-  });
-  stream.addEventListener('result', (e) => {
-    stream.close();
-    state.stream = null;
-    finish(report.lines(JSON.parse(e.data)));
-  });
-  stream.addEventListener('error', (e) => {
-    stream.close();
-    state.stream = null;
-    let message = 'LINK FAILURE - THE SERVER DID NOT ANSWER';
-    try { message = JSON.parse(e.data).message; } catch { /* transport error */ }
-    screenMat.uniforms.uNoise.value = 0.35;
-    setTimeout(() => { screenMat.uniforms.uNoise.value = 0; }, 900);
-    finish(['', `\x02 ${message}`, '', '\x01 TRY ANOTHER SYMBOL.']);
-  });
+  if (state.catalog) await runPublished(symbol, progress);
+  else runLive(symbol, progress);
 }
 
-// runStatic reads a published answer. The work was done when the site was
-// built, so the stages are replayed at a readable pace rather than faked:
-// these are the steps that actually produced the number on screen.
-async function runStatic(symbol, fan) {
+// runPublished reads an answer computed at build time. The stages are
+// replayed at a readable pace rather than invented: these are the steps
+// that actually produced the numbers.
+async function runPublished(symbol, progress) {
   const known = state.catalog.symbols.some((s) => s.symbol === symbol);
   if (!known) {
-    finish(report.unknown(symbol, state.catalog));
+    finish(report.unknown(symbol, state.catalog, run));
     return;
   }
-  const stages = state.catalog.stages?.length ? state.catalog.stages : ['loading published analysis'];
   const fetching = fetch(`./data/${encodeURIComponent(symbol)}.json`, { cache: 'no-cache' });
+  const stages = state.catalog.stages?.length
+    ? state.catalog.stages : ['loading the published analysis'];
 
   for (let i = 0; i < stages.length; i++) {
-    fan.setStage(stages[i], (i + 1) / (stages.length + 1));
-    await sleep(2200 / stages.length);
+    if (state.current !== symbol) return;   // a newer request took over
+    progress.setStage(stages[i], (i + 1) / (stages.length + 1));
+    await sleep(1400 / stages.length);
   }
   try {
     const res = await fetching;
     if (!res.ok) throw new Error(String(res.status));
-    finish(report.lines(await res.json(), state.catalog));
+    const view = await res.json();
+    if (state.current !== symbol) return;
+    finish(report.analysis(view, state.catalog));
   } catch {
-    finish(['', `\x02 COULD NOT READ THE PUBLISHED ANALYSIS FOR ${symbol}`, '']);
+    finish(report.message('Could not read that analysis',
+      `${symbol} is in the catalog but its file could not be loaded. Try again.`));
   }
 }
 
-const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+function runLive(symbol, progress) {
+  const stream = new EventSource(`/api/analyze?symbol=${encodeURIComponent(symbol)}`);
+  state.stream = stream;
 
-function finish(lines) {
-  terminal.setOverlay(null);
-  terminal.clear();
-  let i = 0;
-  const tick = () => {
-    if (i >= lines.length) {
-      terminal.write('');
-      terminal.setPrompt('▶ ');
-      state.mode = 'ready';
-      hint.classList.remove('gone');
-      return;
-    }
-    terminal.write(lines[i++]);
-    setTimeout(tick, 34);
-  };
-  tick();
+  stream.addEventListener('stage', (e) => {
+    const { stage, fraction } = JSON.parse(e.data);
+    progress.setStage(stage, fraction);
+  });
+  stream.addEventListener('result', (e) => {
+    stream.close();
+    state.stream = null;
+    finish(report.analysis(JSON.parse(e.data), null));
+  });
+  stream.addEventListener('error', (e) => {
+    stream.close();
+    state.stream = null;
+    let text = 'The server did not answer. Try again in a moment.';
+    try { text = JSON.parse(e.data).message; } catch { /* transport failure */ }
+    finish(report.message('No reading', text));
+  });
 }
 
-// ------------------------------------------------------------------- input
+function finish(node) {
+  result.setAttribute('aria-busy', 'false');
+  show(node);
+}
 
-function onKey(e) {
-  if (state.mode === 'off') { powerOn(); e.preventDefault(); return; }
-  if (e.metaKey || e.ctrlKey || e.altKey) return;
-  state.keyFlash = 1;
+// ------------------------------------------------------------- the wiring
 
-  if (e.key === 'Enter') {
-    submit(state.input);
-    e.preventDefault();
+addEventListener('popstate', () => {
+  const symbol = new URLSearchParams(location.search).get('s');
+  if (symbol) run(symbol, { push: false });
+  else atRest();
+});
+
+(async () => {
+  state.catalog = await loadCatalog();
+  describeCatalog();
+  const deep = new URLSearchParams(location.search).get('s');
+  if (deep) {
+    run(deep, { push: false });
     return;
   }
-  if (state.mode !== 'ready') return;
-  if (e.key === 'Backspace') {
-    state.input = state.input.slice(0, -1);
-  } else if (e.key.length === 1 && /[a-zA-Z.\-]/.test(e.key) && state.input.length < 6) {
-    state.input += e.key.toUpperCase();
-  } else {
-    return;
-  }
-  terminal.setInput(state.input);
-  e.preventDefault();
+  atRest();
+  // Focusing on a touch screen throws up the keyboard over the catalog
+  // before the reader has seen it.
+  if (matchMedia('(pointer: fine)').matches) input.focus();
+})();
+
+// atRest is what the page shows with nothing asked yet: the catalog, so
+// the first frame demonstrates what the machine holds instead of waiting.
+function atRest() {
+  state.current = '';
+  input.value = '';
+  document.title = 'MKTPREDICT';
+  result.setAttribute('aria-busy', 'false');
+  if (state.catalog) showBrowse();
+  else result.replaceChildren(report.message('Ready',
+    'Type any listed US ticker with traded options and it will be analysed on demand.'));
 }
-
-addEventListener('keydown', onKey);
-gate.addEventListener('click', powerOn);
-renderer.domElement.addEventListener('click', () => {
-  if (state.mode === 'off') powerOn();
-  else proxy.focus({ preventScroll: true });
-});
-
-// Look around by dragging; the view returns to centre when released.
-const look = { x: 0, y: 0, tx: 0, ty: 0, dragging: false, px: 0, py: 0 };
-renderer.domElement.addEventListener('pointerdown', (e) => {
-  look.dragging = true; look.px = e.clientX; look.py = e.clientY;
-});
-addEventListener('pointerup', () => { look.dragging = false; look.tx = 0; look.ty = 0; });
-addEventListener('pointermove', (e) => {
-  if (look.dragging) {
-    look.tx = THREE.MathUtils.clamp(look.tx + (e.clientX - look.px) * 0.0016, -0.5, 0.5);
-    look.ty = THREE.MathUtils.clamp(look.ty - (e.clientY - look.py) * 0.0012, -0.22, 0.32);
-    look.px = e.clientX; look.py = e.clientY;
-  } else {
-    look.tx = (e.clientX / innerWidth - 0.5) * 0.16;
-    look.ty = (e.clientY / innerHeight - 0.5) * -0.08;
-  }
-});
-
-// Scroll to lean in and read the screen, or back out to see the machine.
-renderer.domElement.addEventListener('wheel', (e) => {
-  view.orbit = THREE.MathUtils.clamp(view.orbit + e.deltaY * 0.004, view.minOrbit, view.maxOrbit);
-  e.preventDefault();
-}, { passive: false });
-
-addEventListener('resize', () => {
-  camera.aspect = innerWidth / innerHeight;
-  camera.updateProjectionMatrix();
-  renderer.setSize(innerWidth, innerHeight);
-  fitView();
-});
-
-// ------------------------------------------------------------------- frame
-
-let last = performance.now();
-function frame(now) {
-  requestAnimationFrame(frame);
-  const dt = Math.min(0.05, (now - last) / 1000);
-  last = now;
-
-  // The tube warms up rather than snapping on.
-  const wanted = state.mode === 'off' ? 0 : 1;
-  state.power += (wanted - state.power) * Math.min(1, dt * 1.7);
-  screenMat.uniforms.uPower.value = state.power;
-  screenMat.uniforms.uTime.value = now / 1000;
-
-  // Blink the cursor only while the machine is waiting for a person.
-  terminal.setCursor(state.mode === 'ready' && Math.floor(now / 450) % 2 === 0);
-  if (terminal.render(now)) screenTex.needsUpdate = true;
-
-  // The room takes its colour from what the screen is doing.
-  const busy = state.mode === 'working' ? 1 : 0;
-  screenLight.intensity = state.power * (2.6 + busy * 1.8 + Math.sin(now / 240) * 0.18);
-  lamp.material.emissiveIntensity = state.power * (2.2 + busy * 1.6);
-  rimLight.intensity = 14 + Math.sin(now / 1400) * 4;
-
-  // Keyboard reacts to typing, and the whole machine breathes.
-  state.keyFlash *= 0.9;
-  keyboard.position.y = -1.05 - state.keyFlash * 0.012;
-  monitor.rotation.y = Math.sin(now / 5200) * 0.02;
-  monitor.position.y = 0.55 + Math.sin(now / 3100) * 0.012;
-
-  look.x += (look.tx - look.x) * Math.min(1, dt * 3.2);
-  look.y += (look.ty - look.y) * Math.min(1, dt * 3.2);
-  camera.position.x = Math.sin(look.x) * view.orbit;
-  camera.position.z = Math.cos(look.x) * view.orbit;
-  // Sit level with the screen when close, and lift to take in the desk as
-  // the view pulls back.
-  const rise = THREE.MathUtils.smoothstep(view.orbit, view.minOrbit, view.maxOrbit);
-  camera.position.y = 0.75 + rise * 2.2 + look.y * 3.4;
-  camera.lookAt(0, 0.62 - rise * 0.3, rise * 0.5);
-
-  renderer.render(scene, camera);
-}
-requestAnimationFrame(frame);

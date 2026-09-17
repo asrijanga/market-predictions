@@ -13,6 +13,9 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/asrijanga/market-predictions/internal/model"
+	"github.com/asrijanga/market-predictions/internal/pack"
 )
 
 func testServer(a Analyzer) *httptest.Server {
@@ -174,7 +177,7 @@ func TestWriteStaticCopiesTheFrontEnd(t *testing.T) {
 	if err := WriteStatic(dir); err != nil {
 		t.Fatal(err)
 	}
-	for _, name := range []string{"index.html", "app.js", "terminal.js", "crt.js", "loading.js", "report.js", "vendor/three.module.min.js"} {
+	for _, name := range []string{"index.html", "style.css", "app.js", "report.js"} {
 		info, err := os.Stat(filepath.Join(dir, name))
 		if err != nil {
 			t.Errorf("missing %s: %v", name, err)
@@ -191,27 +194,85 @@ func TestWriteStaticCopiesTheFrontEnd(t *testing.T) {
 		t.Fatal(err)
 	}
 	page := string(body)
-	if strings.Contains(page, `src="/`) || strings.Contains(page, `"/vendor/`) {
+	if strings.Contains(page, `src="/`) || strings.Contains(page, `href="/`) {
 		t.Error("index.html uses absolute asset paths, which break under a subpath")
 	}
-	if !strings.Contains(page, "./vendor/three.module.min.js") {
-		t.Error("index.html does not point at the vendored three.js")
+	for _, ref := range []string{"./style.css", "./app.js"} {
+		if !strings.Contains(page, ref) {
+			t.Errorf("index.html does not reference %s", ref)
+		}
+	}
+	// The front end is plain text in a document now. Nothing should pull a
+	// renderer back in: the whole point of the rewrite is that the report
+	// reflows, scales with the reader's font size and can be selected.
+	if strings.Contains(page, "three") || strings.Contains(page, "importmap") {
+		t.Error("index.html still loads a 3D renderer")
 	}
 }
 
-func TestShortDetailFitsTheScreen(t *testing.T) {
-	cases := []string{
-		"0.06 volatility points per unit of log-moneyness",
-		"20-day realised volatility at the 71st percentile of the year",
-		"-24.5% excess return over six months",
-		"+16.3% away from it",
-		"trading above it",
+// The page has to be legible on a phone held in one hand, which is where
+// the character-grid version failed: it could not reflow.
+func TestPageIsBuiltForSmallScreens(t *testing.T) {
+	dir := t.TempDir()
+	if err := WriteStatic(dir); err != nil {
+		t.Fatal(err)
 	}
-	for _, in := range cases {
-		got := shortDetail(in)
-		if len(got) > 34 {
-			t.Errorf("shortDetail(%q) = %q, still %d characters", in, got, len(got))
+	page, err := os.ReadFile(filepath.Join(dir, "index.html"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	html := string(page)
+	for _, want := range []string{
+		"width=device-width",      // no fixed-width layout
+		"viewport-fit=cover",      // notch-aware, with safe-area padding
+		"An experiment, for fun.", // the disclaimer leads the page
+	} {
+		if !strings.Contains(html, want) {
+			t.Errorf("index.html is missing %q", want)
 		}
+	}
+	// A page that says "for fun" after the numbers is not a disclaimer.
+	if i, j := strings.Index(html, "An experiment, for fun."), strings.Index(html, "search-form"); i < 0 || i > j {
+		t.Error("the disclaimer does not come before the search")
+	}
+
+	css, err := os.ReadFile(filepath.Join(dir, "style.css"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	style := string(css)
+	for _, want := range []string{
+		"prefers-reduced-motion", // animation is opt-out
+		"safe-area-inset",        // clears the home indicator
+		"@media (min-width:",     // the layout actually responds
+	} {
+		if !strings.Contains(style, want) {
+			t.Errorf("style.css is missing %q", want)
+		}
+	}
+}
+
+// The screen used to be 62 columns wide, so labels were abbreviated before
+// they were sent. The page reflows, so it gets the model's own wording.
+func TestViewKeepsTheModelsWording(t *testing.T) {
+	r := &model.Result{
+		Symbol: "TEST", AsOf: time.Now(), Spot: 100,
+		Stance: "bullish", Score: 0.4,
+		Signals: []model.Signal{{
+			Name:   "Position against the 200-day average",
+			Detail: "+16.3% away from it",
+			Score:  0.5, Weight: 0.15, Contribution: 0.075,
+		}},
+	}
+	v := NewView(&pack.Pack{}, r)
+	if len(v.For) != 1 {
+		t.Fatalf("got %d supporting signals", len(v.For))
+	}
+	if v.For[0].Name != "Position against the 200-day average" {
+		t.Errorf("name = %q, want it unabridged", v.For[0].Name)
+	}
+	if v.For[0].Detail != "+16.3% away from it" {
+		t.Errorf("detail = %q, want it unabridged", v.For[0].Detail)
 	}
 }
 

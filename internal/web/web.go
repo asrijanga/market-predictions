@@ -239,7 +239,7 @@ func NewView(p *pack.Pack, r *model.Result) *View {
 		})
 	}
 	for _, s := range r.Signals {
-		sv := SignalView{Name: shortSignalName(s.Name), Detail: shortDetail(s.Detail), Score: s.Score, Weight: s.Weight}
+		sv := SignalView{Name: s.Name, Detail: s.Detail, Score: s.Score, Weight: s.Weight}
 		switch {
 		case s.Contribution > 0 && len(v.For) < 5:
 			v.For = append(v.For, sv)
@@ -260,46 +260,6 @@ func NewView(p *pack.Pack, r *model.Result) *View {
 	return v
 }
 
-// shortNames keep signal labels inside the terminal's 62 columns. An
-// unmapped name falls through unchanged rather than being truncated here.
-var shortNames = map[string]string{
-	"Fitted trend":                            "TREND",
-	"Position against the 200-day average":    "VS 200-DAY",
-	"Position against the 50-day average":     "VS 50-DAY",
-	"Relative strength against the benchmark": "REL STRENGTH",
-	"One-month momentum":                      "1-MONTH MOVE",
-	"Distance from the 52-week high":          "FROM 52W HIGH",
-	"RSI(14)":                                 "RSI(14)",
-	"Volatility regime":                       "VOL REGIME",
-	"Option skew":                             "OPTION SKEW",
-	"Put/call open interest":                  "PUT/CALL OI",
-}
-
-// verbosePhrases are the readings whose prose does not fit a 62-column
-// screen. The report keeps the long form; the terminal gets the short one.
-var verbosePhrases = strings.NewReplacer(
-	"volatility points per unit of log-moneyness", "pts per log-moneyness",
-	"20-day realised volatility at the", "20d vol at",
-	"percentile of the year", "percentile",
-	"excess return over six months", "excess over 6m",
-	"over six months", "over 6m",
-	"trading above it", "above",
-	"trading below it", "below",
-	"away from it", "away",
-)
-
-func shortDetail(detail string) string { return verbosePhrases.Replace(detail) }
-
-func shortSignalName(name string) string {
-	if short, ok := shortNames[name]; ok {
-		return short
-	}
-	return strings.ToUpper(name)
-}
-
-// modelWarnings keeps only what changes the answer. Headlines and filings
-// are part of the written brief, not of the model, so their absence is not
-// worth a line on a screen this small.
 func modelWarnings(all []string) []string {
 	var out []string
 	for _, w := range all {

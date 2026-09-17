@@ -3,8 +3,7 @@
 > **This is an experiment, built for fun.** It is not financial advice, it
 > is not a trading tool, and it must not be used for any financial benefit.
 > The numbers it prints come from a toy model over public data, and nothing
-> it says should be acted on with real money. Treat it as a curiosity that
-> happens to draw a nice CRT.
+> it says should be acted on with real money. Treat it as a curiosity.
 
 `mktpredict` is a Go command-line tool for finding and timing call-option
 trades on US stocks, with a browser front end. Six commands:
@@ -14,7 +13,7 @@ trades on US stocks, with a browser front end. Six commands:
 | `scan` | Ranks the largest liquid US stocks as call candidates from six months of price history. |
 | `pack SYMBOL` | Builds a one-year data pack for one stock: prices, trend statistics, the live option chain with implied volatility, earnings date, SEC filings and headlines. |
 | `analyze SYMBOL` | Runs the statistical model over that pack and answers whether the stock is bullish or bearish and why, where it is likely to be next quarter and next year, and when to buy calls. |
-| `serve` | Serves the same analysis to a browser front end: an 80s terminal, rendered in Three.js, that takes one ticker at a time. |
+| `serve` | Serves the same analysis to a browser front end: a terminal-styled page that takes one ticker at a time. |
 | `build-site` | Renders that front end plus precomputed analyses into a directory any static host can serve, which is how it goes on GitHub Pages. |
 | `cache` | Reports on, or prunes, the DuckDB database of computed analyses. |
 
@@ -262,26 +261,30 @@ mktpredict serve                    # http://localhost:8080
 mktpredict serve -addr :9000 -paths 40000
 ```
 
-A CRT terminal on a desk, rendered in Three.js. Click to power the tube on,
-type a ticker, press return. The machine answers and waits for the next one,
+Type a ticker, press return. The page answers and waits for the next one,
 and repeat questions come back from the database in milliseconds.
 
-* **The screen is a real terminal.** Text is drawn into a character grid on a
-  2D canvas, uploaded as a texture, and put through a shader that does what a
-  cathode ray tube did to an image: barrel distortion across curved glass,
-  scanlines and an aperture grille, colour separation that grows toward the
-  edges, phosphor bleed on the brightest glyphs, a rolling refresh bar, mains
-  flicker and a vignette. Powering on opens the picture from a horizontal
-  line, the way a tube warms up.
+The interface keeps the terminal's character — monospace, phosphor green on
+a dark ground, a prompt and a blinking caret — but it is an ordinary
+document, not a simulated tube. That distinction is the whole design:
+
+* **Everything is real text.** The reading is headings, paragraphs and
+  lists, so it reflows to the width it is given, scales with the reader's
+  font settings, can be selected, searched and read aloud, and survives a
+  phone held in one hand. An earlier version painted a fixed 62×30
+  character grid onto a curved WebGL texture, which could do none of those
+  things and was cut off down both sides on any narrow screen.
+* **The numbers are shaped to be read.** A diverging meter puts the score
+  against neutral, each horizon shows its probability and its 80% band with
+  today's price and the median outcome marked on it, and every signal
+  carries its own reading and its weight in the total.
 * **Waiting is not a spinner.** The server streams its real stages over
-  server-sent events, so the screen names the stage it is on: fitting the
-  volatility model, decomposing the surface, simulating paths, ranking plans.
-  While it waits it draws what the server is doing, a fan of simulated price
-  paths spreading out from today with the distribution of where they end
-  piling up against the right edge as the run proceeds.
-* **The room responds.** The screen is a light source, so the case, the
-  keyboard and the desk are lit by whatever the tube is showing, and the glow
-  lifts while an analysis runs. Drag to look around, scroll to lean in.
+  server-sent events, so the page names the stage it is on: fitting the
+  volatility model, decomposing the surface, simulating paths, ranking
+  plans. The published site replays the same list, because those are the
+  steps that produced the numbers it is about to show.
+* **It is addressable.** Every reading has a URL (`?s=NVDA`), so a result
+  can be linked, bookmarked and reached with the back button.
 
 Flags: `-addr` (localhost:8080), `-paths` (20000), `-rate` (0.04),
 `-max-concurrent` (4), `-timeout` (3m), `-db` (the DuckDB file, empty to
@@ -289,9 +292,10 @@ disable), `-benchmark`, `-sec-contact`, `-no-news`, and the cache flags. Symbols
 pattern before any work starts, and analyses are bounded by a semaphore so a
 page left reloading cannot spawn unbounded work.
 
-Three.js is vendored under `internal/web/static/vendor`, and the whole front
-end is embedded in the binary, so `serve` needs no build step, no package
-manager and no third-party runtime dependency.
+The front end is four files — `index.html`, `style.css`, `app.js` and
+`report.js` — embedded in the binary with `go:embed`. There is no framework,
+no build step, no package manager and nothing fetched from a third party at
+runtime.
 
 ## Caching computed analyses
 
