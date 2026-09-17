@@ -12,11 +12,14 @@ scene.fog = new THREE.Fog(0x05040a, 7, 24);
 const camera = new THREE.PerspectiveCamera(42, innerWidth / innerHeight, 0.1, 100);
 // Far enough back that the whole machine, the keyboard and the room read as
 // one object; the screen is still legible because the tube is large.
-const view = { orbit: 8.6, minOrbit: 5.4, maxOrbit: 14 };
-camera.position.set(0, 2.2, view.orbit);
+// The default frame puts the screen large enough to read; scrolling pulls
+// back far enough to see the whole machine in its room.
+const view = { orbit: 5.9, minOrbit: 4.6, maxOrbit: 15 };
+camera.position.set(0, 1.1, view.orbit);
 
 const renderer = new THREE.WebGLRenderer({ antialias: true });
-renderer.setPixelRatio(Math.min(devicePixelRatio, 2));
+// Text on a curved texture needs the pixels, so do not skimp here.
+renderer.setPixelRatio(Math.min(devicePixelRatio, 2.5));
 renderer.setSize(innerWidth, innerHeight);
 renderer.toneMapping = THREE.ACESFilmicToneMapping;
 renderer.toneMappingExposure = 1.1;
@@ -144,7 +147,22 @@ const state = {
   input: '',
   stream: null,
   keyFlash: 0,
+  // catalog is set when the page is served statically: a published site
+  // cannot run the model or reach the data providers from a browser, so it
+  // ships the answers instead.
+  catalog: null,
 };
+
+async function loadCatalog() {
+  try {
+    const res = await fetch('./data/index.json', { cache: 'no-cache' });
+    if (!res.ok) return null;
+    const catalog = await res.json();
+    return Array.isArray(catalog.symbols) && catalog.symbols.length ? catalog : null;
+  } catch {
+    return null;   // no catalog means a live server is answering
+  }
+}
 
 function typeOut(lines, done) {
   let i = 0;
@@ -156,13 +174,14 @@ function typeOut(lines, done) {
   tick();
 }
 
-function powerOn() {
+async function powerOn() {
   if (state.mode !== 'off') return;
   state.mode = 'booting';
   gate.classList.add('gone');
   lamp.material.emissiveIntensity = 2.4;
   terminal.clear();
-  typeOut(report.BOOT, () => {
+  state.catalog = await loadCatalog();
+  typeOut(report.boot(state.catalog), () => {
     state.mode = 'ready';
     terminal.setPrompt('▶ ');
     hint.classList.remove('gone');
@@ -187,6 +206,8 @@ function submit(symbol) {
   const nextFan = new PathFan();
   terminal.setOverlay((ctx, canvas, time) => nextFan.draw(ctx, canvas, time));
 
+  if (state.catalog) { runStatic(clean, nextFan); return; }
+
   const stream = new EventSource(`/api/analyze?symbol=${encodeURIComponent(clean)}`);
   state.stream = stream;
 
@@ -209,6 +230,39 @@ function submit(symbol) {
     finish(['', `\x02 ${message}`, '', '\x01 TRY ANOTHER SYMBOL.']);
   });
 }
+
+// runStatic reads a published answer. The work was done when the site was
+// built, so the stages are replayed at a readable pace rather than faked:
+// these are the steps that actually produced the number on screen.
+async function runStatic(symbol, fan) {
+  const known = state.catalog.symbols.some((s) => s.symbol === symbol);
+  if (!known) {
+    finish([
+      '',
+      `\x02 ${symbol} IS NOT IN THIS PUBLISHED SET`,
+      '',
+      '\x01 THIS COPY SERVES PRECOMPUTED ANALYSES. AVAILABLE:',
+      ...report.symbolColumns(state.catalog.symbols),
+    ]);
+    return;
+  }
+  const stages = state.catalog.stages?.length ? state.catalog.stages : ['loading published analysis'];
+  const fetching = fetch(`./data/${encodeURIComponent(symbol)}.json`, { cache: 'no-cache' });
+
+  for (let i = 0; i < stages.length; i++) {
+    fan.setStage(stages[i], (i + 1) / (stages.length + 1));
+    await sleep(2200 / stages.length);
+  }
+  try {
+    const res = await fetching;
+    if (!res.ok) throw new Error(String(res.status));
+    finish(report.lines(await res.json(), state.catalog));
+  } catch {
+    finish(['', `\x02 COULD NOT READ THE PUBLISHED ANALYSIS FOR ${symbol}`, '']);
+  }
+}
+
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
 function finish(lines) {
   terminal.setOverlay(null);
@@ -322,8 +376,11 @@ function frame(now) {
   look.y += (look.ty - look.y) * Math.min(1, dt * 3.2);
   camera.position.x = Math.sin(look.x) * view.orbit;
   camera.position.z = Math.cos(look.x) * view.orbit;
-  camera.position.y = 2.2 + look.y * 3.4;
-  camera.lookAt(0, 0.35, 0.4);
+  // Sit level with the screen when close, and lift to take in the desk as
+  // the view pulls back.
+  const rise = THREE.MathUtils.smoothstep(view.orbit, view.minOrbit, view.maxOrbit);
+  camera.position.y = 0.75 + rise * 2.2 + look.y * 3.4;
+  camera.lookAt(0, 0.62 - rise * 0.3, rise * 0.5);
 
   renderer.render(scene, camera);
 }

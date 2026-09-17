@@ -81,7 +81,7 @@ func Signals(p *pack.Pack, ivm IVModel) ([]Signal, float64) {
 	add("RSI(14)", fmt.Sprintf("%.0f", p.Trend.RSI), -(p.Trend.RSI-50)/30, 0.05)
 
 	add("Volatility regime",
-		fmt.Sprintf("20-day realised volatility at the %.0fth percentile of the year", 100*p.Year.RealizedVolPctl),
+		fmt.Sprintf("20-day realised volatility at the %s percentile of the year", ordinal(int(math.Round(100*p.Year.RealizedVolPctl)))),
 		1-2*p.Year.RealizedVolPctl, 0.05)
 
 	if ivm.SkewSlope != 0 {
@@ -185,6 +185,22 @@ func putCallRatio(p *pack.Pack) float64 {
 		return 0
 	}
 	return float64(puts) / float64(calls)
+}
+
+// ordinal renders 1 as "1st", 71 as "71st", 13 as "13th".
+func ordinal(n int) string {
+	suffix := "th"
+	if n%100 < 11 || n%100 > 13 {
+		switch n % 10 {
+		case 1:
+			suffix = "st"
+		case 2:
+			suffix = "nd"
+		case 3:
+			suffix = "rd"
+		}
+	}
+	return fmt.Sprintf("%d%s", n, suffix)
 }
 
 func boolScore(b bool) float64 {

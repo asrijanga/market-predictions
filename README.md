@@ -9,6 +9,7 @@ trades on US stocks. It has three commands:
 | `pack SYMBOL` | Builds a one-year data pack for one stock: prices, trend statistics, the live option chain with implied volatility, earnings date, SEC filings and headlines. |
 | `analyze SYMBOL` | Runs the statistical model over that pack and answers whether the stock is bullish or bearish and why, where it is likely to be next quarter and next year, and when to buy calls. |
 | `serve` | Serves the same analysis to a browser front end: an 80s terminal, rendered in Three.js, that takes one ticker at a time. |
+| `build-site` | Renders that front end plus precomputed analyses into a directory any static host can serve, which is how it goes on GitHub Pages. |
 
 Everything runs locally against public data endpoints (Nasdaq, Google News
 RSS, SEC EDGAR). There are no dependencies outside the Go standard library,
@@ -273,6 +274,41 @@ page left reloading cannot spawn unbounded work.
 Three.js is vendored under `internal/web/static/vendor`, and the whole front
 end is embedded in the binary, so `serve` needs no build step, no package
 manager and no third-party runtime dependency.
+
+## Hosting it on GitHub Pages
+
+Pages serves static files only, so there is no Go process to run the model
+there. The data providers make that worse: neither Nasdaq nor the news feed
+sends cross-origin headers, so a browser on `github.io` cannot fetch them
+either, with or without a backend.
+
+So the analysis runs ahead of time and the site serves the answers:
+
+```sh
+mktpredict build-site -out dist                      # the default symbol set
+mktpredict build-site -out dist -symbols AAPL,NVDA   # or choose your own
+mktpredict build-site -out dist -top 40              # or the 40 largest stocks
+```
+
+That writes the front end, one `data/SYMBOL.json` per analysis, a
+`data/index.json` describing the set, and `.nojekyll` so Pages does not run
+the output through Jekyll. Six symbols take about twelve seconds and 760 KB.
+
+`.github/workflows/pages.yml` runs it on every push to `main`, on a weekday
+schedule after the US close, and on demand with a symbol list. To turn it on,
+set **Settings → Pages → Source** to **GitHub Actions** once. No secrets are
+needed: the model reads prices, options and the earnings date, none of which
+require a key, and the site build skips headlines and filings because they
+feed the written brief rather than the model.
+
+The page works the same either way. It looks for `data/index.json` at boot:
+finding one, it reads the published set and says so on screen and under every
+report; finding none, it assumes a live server and streams from
+`/api/analyze`. All asset paths are relative, so a project site under
+`/repo/` works without configuration.
+
+What a published site cannot do is answer for a symbol nobody computed. Ask
+for one and the terminal says so and lists what it has.
 
 ## Runtime
 

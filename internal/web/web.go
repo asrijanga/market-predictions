@@ -15,6 +15,8 @@ import (
 	"log"
 	"math"
 	"net/http"
+	"os"
+	"path/filepath"
 	"regexp"
 	"strings"
 	"time"
@@ -25,6 +27,35 @@ import (
 
 //go:embed static
 var staticFiles embed.FS
+
+// Assets returns the embedded front end, rooted at the directory the page
+// is served from.
+func Assets() fs.FS {
+	sub, err := fs.Sub(staticFiles, "static")
+	if err != nil {
+		panic(fmt.Sprintf("web: embedded assets: %v", err))
+	}
+	return sub
+}
+
+// WriteStatic copies the front end to dir, which is how the static site is
+// assembled for hosting somewhere that cannot run the analysis itself.
+func WriteStatic(dir string) error {
+	return fs.WalkDir(Assets(), ".", func(path string, d fs.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		target := filepath.Join(dir, path)
+		if d.IsDir() {
+			return os.MkdirAll(target, 0o755)
+		}
+		body, err := fs.ReadFile(Assets(), path)
+		if err != nil {
+			return err
+		}
+		return os.WriteFile(target, body, 0o644)
+	})
+}
 
 // symbolPattern is what the front end is allowed to ask about: a plain
 // ticker, optionally with a share-class suffix.
@@ -53,12 +84,8 @@ func (s *Server) Handler() http.Handler {
 	}
 	s.sem = make(chan struct{}, s.MaxConcurrent)
 
-	assets, err := fs.Sub(staticFiles, "static")
-	if err != nil {
-		panic(fmt.Sprintf("web: embedded assets: %v", err))
-	}
 	mux := http.NewServeMux()
-	mux.Handle("/", http.FileServer(http.FS(assets)))
+	mux.Handle("/", http.FileServer(http.FS(Assets())))
 	mux.HandleFunc("/api/analyze", s.handleAnalyze)
 	return mux
 }
@@ -194,7 +221,7 @@ func NewView(p *pack.Pack, r *model.Result) *View {
 	v := &View{
 		Symbol: r.Symbol, AsOf: r.AsOf.Format(time.DateOnly), Spot: r.Spot,
 		Stance: r.Stance, Score: r.Score, ImpliedMove: r.ImpliedMove,
-		BaseVol: r.IV.BaseVol, Warnings: r.Warnings, Elapsed: r.Elapsed,
+		BaseVol: r.IV.BaseVol, Warnings: modelWarnings(r.Warnings), Elapsed: r.Elapsed,
 	}
 	if r.EarningsIdx > 0 {
 		v.Earnings = r.EarningsDate.Format(time.DateOnly)
@@ -207,7 +234,7 @@ func NewView(p *pack.Pack, r *model.Result) *View {
 		})
 	}
 	for _, s := range r.Signals {
-		sv := SignalView{Name: shortSignalName(s.Name), Detail: s.Detail, Score: s.Score, Weight: s.Weight}
+		sv := SignalView{Name: shortSignalName(s.Name), Detail: shortDetail(s.Detail), Score: s.Score, Weight: s.Weight}
 		switch {
 		case s.Contribution > 0 && len(v.For) < 5:
 			v.For = append(v.For, sv)
@@ -243,11 +270,40 @@ var shortNames = map[string]string{
 	"Put/call open interest":                  "PUT/CALL OI",
 }
 
+// verbosePhrases are the readings whose prose does not fit a 62-column
+// screen. The report keeps the long form; the terminal gets the short one.
+var verbosePhrases = strings.NewReplacer(
+	"volatility points per unit of log-moneyness", "pts per log-moneyness",
+	"20-day realised volatility at the", "20d vol at",
+	"percentile of the year", "percentile",
+	"excess return over six months", "excess over 6m",
+	"over six months", "over 6m",
+	"trading above it", "above",
+	"trading below it", "below",
+	"away from it", "away",
+)
+
+func shortDetail(detail string) string { return verbosePhrases.Replace(detail) }
+
 func shortSignalName(name string) string {
 	if short, ok := shortNames[name]; ok {
 		return short
 	}
 	return strings.ToUpper(name)
+}
+
+// modelWarnings keeps only what changes the answer. Headlines and filings
+// are part of the written brief, not of the model, so their absence is not
+// worth a line on a screen this small.
+func modelWarnings(all []string) []string {
+	var out []string
+	for _, w := range all {
+		if strings.HasPrefix(w, "news:") || strings.HasPrefix(w, "filings:") {
+			continue
+		}
+		out = append(out, w)
+	}
+	return out
 }
 
 func triggerLabel(t model.Trigger, spot float64) string {

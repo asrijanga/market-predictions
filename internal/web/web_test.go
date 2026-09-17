@@ -6,6 +6,8 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -163,4 +165,61 @@ func TestConcurrencyIsBounded(t *testing.T) {
 	case <-time.After(200 * time.Millisecond):
 	}
 	close(release)
+}
+
+func TestWriteStaticCopiesTheFrontEnd(t *testing.T) {
+	dir := t.TempDir()
+	if err := WriteStatic(dir); err != nil {
+		t.Fatal(err)
+	}
+	for _, name := range []string{"index.html", "app.js", "terminal.js", "crt.js", "loading.js", "report.js", "vendor/three.module.min.js"} {
+		info, err := os.Stat(filepath.Join(dir, name))
+		if err != nil {
+			t.Errorf("missing %s: %v", name, err)
+			continue
+		}
+		if info.Size() == 0 {
+			t.Errorf("%s is empty", name)
+		}
+	}
+	// The page must reference its assets relatively, or a project site
+	// hosted under /repo/ cannot find them.
+	body, err := os.ReadFile(filepath.Join(dir, "index.html"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	page := string(body)
+	if strings.Contains(page, `src="/`) || strings.Contains(page, `"/vendor/`) {
+		t.Error("index.html uses absolute asset paths, which break under a subpath")
+	}
+	if !strings.Contains(page, "./vendor/three.module.min.js") {
+		t.Error("index.html does not point at the vendored three.js")
+	}
+}
+
+func TestShortDetailFitsTheScreen(t *testing.T) {
+	cases := []string{
+		"0.06 volatility points per unit of log-moneyness",
+		"20-day realised volatility at the 71st percentile of the year",
+		"-24.5% excess return over six months",
+		"+16.3% away from it",
+		"trading above it",
+	}
+	for _, in := range cases {
+		got := shortDetail(in)
+		if len(got) > 34 {
+			t.Errorf("shortDetail(%q) = %q, still %d characters", in, got, len(got))
+		}
+	}
+}
+
+func TestModelWarningsDropDataNotes(t *testing.T) {
+	got := modelWarnings([]string{
+		"news: disabled",
+		"filings: disabled (no SEC contact email)",
+		"no earnings date available; timing ignores event risk",
+	})
+	if len(got) != 1 || !strings.Contains(got[0], "earnings") {
+		t.Fatalf("got %v", got)
+	}
 }

@@ -2,9 +2,9 @@
 // shows goes through here: the CRT shader only ever sees this canvas.
 const COLS = 62;
 const ROWS = 30;
-const CELL_W = 22;
-const CELL_H = 32;
-const PAD = 26;
+const CELL_W = 26;
+const CELL_H = 38;
+const PAD = 30;
 
 export class Terminal {
   constructor() {
@@ -73,18 +73,18 @@ export class Terminal {
     ctx.fillStyle = 'rgba(40, 255, 130, 0.028)';
     for (let r = 0; r < ROWS; r++) ctx.fillRect(PAD, PAD + r * CELL_H + CELL_H - 3, COLS * CELL_W, 1);
 
-    ctx.font = `600 ${CELL_H - 10}px ui-monospace, "SF Mono", Menlo, Consolas, monospace`;
+    ctx.font = `700 ${CELL_H - 10}px ui-monospace, "SF Mono", Menlo, Consolas, monospace`;
     ctx.textBaseline = 'top';
-    ctx.fillStyle = '#c9ffe0';
-    ctx.shadowColor = 'rgba(90, 255, 160, 0.85)';
-    ctx.shadowBlur = 12;
+    ctx.fillStyle = '#e4fff0';
+    ctx.shadowColor = 'rgba(90, 255, 160, 0.7)';
+    ctx.shadowBlur = 8;
 
     for (let r = 0; r < this.lines.length; r++) {
       const line = this.lines[r];
       if (!line) continue;
       // A leading \x01 marks a dim line, \x02 a bright one.
-      let text = line, alpha = 0.86;
-      if (text.startsWith('\x01')) { text = text.slice(1); alpha = 0.5; }
+      let text = line, alpha = 0.92;
+      if (text.startsWith('\x01')) { text = text.slice(1); alpha = 0.72; }
       else if (text.startsWith('\x02')) { text = text.slice(1); alpha = 1; }
       ctx.globalAlpha = alpha;
       ctx.fillText(text, PAD, PAD + r * CELL_H);

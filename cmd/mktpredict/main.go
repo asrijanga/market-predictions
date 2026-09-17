@@ -4,6 +4,7 @@
 //	mktpredict pack SYMBOL [flags]    build a one-year data pack for one stock
 //	mktpredict analyze SYMBOL [flags] build the pack and model the entry timing
 //	mktpredict serve [flags]          run the terminal front end on localhost
+//	mktpredict build-site [flags]     render the front end and precomputed data for static hosting
 //
 // Run any subcommand with -h for its flags.
 package main
@@ -39,6 +40,7 @@ Commands:
   pack      build a one-year data pack (prices, options, news, filings) for one symbol
   analyze   model when to buy calls on one symbol over the next three months
   serve     run the browser front end: a terminal that answers one symbol at a time
+  build-site  render the front end plus precomputed analyses for a static host
 
 Run "mktpredict <command> -h" for flags.
 `
@@ -66,6 +68,8 @@ func main() {
 		err = packCommand(ctx, args, os.Stdout, true)
 	case "serve":
 		err = serveCommand(ctx, args, os.Stdout)
+	case "build-site":
+		err = buildSiteCommand(ctx, args, os.Stdout)
 	case "help", "-h", "--help":
 		fmt.Fprint(os.Stderr, usage)
 	default:

@@ -43,7 +43,7 @@ export const CRT_FRAGMENT = /* glsl */`
       return;
     }
 
-    vec2 uv = barrel(vUv, 0.12);
+    vec2 uv = barrel(vUv, 0.055);
     if (uv.x < 0.0 || uv.x > 1.0 || uv.y < 0.0 || uv.y > 1.0) {
       gl_FragColor = vec4(0.0, 0.0, 0.0, 1.0);
       return;
@@ -51,7 +51,7 @@ export const CRT_FRAGMENT = /* glsl */`
 
     // Colour separation grows toward the edges of the tube.
     float edge = length(uv - 0.5);
-    float shift = 0.0016 + edge * 0.0042;
+    float shift = 0.0006 + edge * 0.0016;
     float r = texture2D(uScreen, uv + vec2(shift, 0.0)).g;
     float g = texture2D(uScreen, uv).g;
     float b = texture2D(uScreen, uv - vec2(shift, 0.0)).g;
@@ -62,20 +62,21 @@ export const CRT_FRAGMENT = /* glsl */`
     vec3 col = uPhosphor * signal;
     col += vec3(0.55, 1.0, 0.75) * pow(lum, 3.0) * 0.45;
 
-    // Scanlines and the aperture grille.
-    float lines = 0.86 + 0.14 * sin(uv.y * 1400.0);
-    float grille = 0.94 + 0.06 * sin(uv.x * 2200.0);
+    // Scanlines and the aperture grille, kept shallow: the point is the
+    // texture of a tube, not making the text hard to read.
+    float lines = 0.93 + 0.07 * sin(uv.y * 1400.0);
+    float grille = 0.97 + 0.03 * sin(uv.x * 2200.0);
     col *= lines * grille;
 
     // A rolling refresh bar, static, and mains flicker.
     float roll = smoothstep(0.0, 0.08, abs(fract(uv.y + uTime * 0.12) - 0.5));
-    col *= 0.94 + 0.06 * roll;
-    col += (hash(uv * 900.0 + uTime * 60.0) - 0.5) * (0.035 + uNoise);
-    col *= 0.97 + 0.03 * sin(uTime * 27.0);
+    col *= 0.97 + 0.03 * roll;
+    col += (hash(uv * 900.0 + uTime * 60.0) - 0.5) * (0.022 + uNoise);
+    col *= 0.985 + 0.015 * sin(uTime * 27.0);
 
     // Vignette and the glass reflection across the top left.
-    col *= 1.0 - 0.85 * pow(edge, 3.2);
-    col += vec3(0.05, 0.09, 0.07) * pow(max(0.0, 1.0 - length(uv - vec2(0.28, 0.82)) * 1.9), 3.0);
+    col *= 1.0 - 0.45 * pow(edge, 3.4);
+    col += vec3(0.03, 0.055, 0.04) * pow(max(0.0, 1.0 - length(uv - vec2(0.28, 0.82)) * 1.9), 3.0);
 
     gl_FragColor = vec4(col * uPower, 1.0);
   }
@@ -93,7 +94,7 @@ export function makeScreenMaterial(canvas) {
       uTime: { value: 0 },
       uPower: { value: 0 },
       uNoise: { value: 0 },
-      uPhosphor: { value: new THREE.Color(0.32, 1.0, 0.55) },
+      uPhosphor: { value: new THREE.Color(0.45, 1.0, 0.62) },
     },
     vertexShader: CRT_VERTEX,
     fragmentShader: CRT_FRAGMENT,

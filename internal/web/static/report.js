@@ -26,7 +26,18 @@ function arrow(direction) {
   return direction === 'up' ? '▲ UP  ' : '▼ DOWN';
 }
 
-export function lines(view) {
+// symbolColumns lays a symbol list out in columns that fit the screen.
+export function symbolColumns(symbols) {
+  const names = symbols.map((s) => s.symbol);
+  const perRow = 6;
+  const out = [];
+  for (let i = 0; i < names.length; i += perRow) {
+    out.push('\x01 ' + names.slice(i, i + perRow).map((n) => pad(n, 8)).join(''));
+  }
+  return out;
+}
+
+export function lines(view, catalog) {
   const out = [];
   out.push(...banner(view));
   out.push(`\x01 SPOT ${view.spot.toFixed(2)}   AS OF ${view.asOf}   RUN ${view.elapsed}`);
@@ -73,27 +84,51 @@ export function lines(view) {
              `IV CRUSH ${Math.round(100 * view.crush)}%`);
   }
   for (const warning of view.warnings ?? []) out.push(`\x01 NOTE: ${warning.toUpperCase()}`);
+  if (catalog) {
+    out.push('');
+    out.push(`\x01 PUBLISHED SET, COMPUTED ${catalog.asOf}. NOT LIVE PRICES.`);
+  }
   return out;
 }
 
 function signalLine(s, sign) {
   const score = `${s.score >= 0 ? '+' : ''}${s.score.toFixed(2)}`;
-  const label = `${s.name}: ${s.detail}`;
-  return ` ${sign} ` + pad(label, W - 10) + padL(score, 6);
+  const budget = W - 10;
+  let label = `${s.name}: ${s.detail}`;
+  // Mark a reading that had to be cut, rather than letting it run silently
+  // off the edge of the tube.
+  if (label.length > budget) label = label.slice(0, budget - 2) + '\u2026';
+  return ` ${sign} ` + pad(label, budget) + padL(score, 6);
 }
 
-export const BOOT = [
-  'MKTPREDICT 8000  (C) 1984 ASRIJANGA SYSTEMS',
-  '64K RAM SYSTEM   ANALYTIC COPROCESSOR PRESENT',
-  '',
-  '\x01SELF TEST ................................ OK',
-  '\x01MARKET DATA LINK ......................... OK',
-  '\x01VOLATILITY UNIT .......................... OK',
-  '\x01MONTE CARLO ENGINE ....................... OK',
-  '',
-  'READY.',
-  '',
-  '\x01TYPE A TICKER SYMBOL AND PRESS RETURN.',
-  '\x01EXAMPLES: AAPL   NVDA   MSFT   WDC',
-  '',
-];
+// boot is the power-on sequence. It tells the truth about which machine
+// this is: one wired to a live model, or one serving a published set.
+export function boot(catalog) {
+  const out = [
+    'MKTPREDICT 8000  (C) 1984 ASRIJANGA SYSTEMS',
+    '64K RAM SYSTEM   ANALYTIC COPROCESSOR PRESENT',
+    '',
+    '\x01SELF TEST ................................ OK',
+  ];
+  if (catalog) {
+    out.push(`\x01ARCHIVE ${pad(catalog.asOf, 16)}................ OK`);
+    out.push('\x01MONTE CARLO ENGINE ....................... OK');
+    out.push('');
+    out.push('READY.');
+    out.push('');
+    out.push(`\x01PUBLISHED SET OF ${catalog.symbols.length} SYMBOLS, COMPUTED ${catalog.asOf}.`);
+    out.push('\x01TYPE ONE AND PRESS RETURN:');
+    out.push(...symbolColumns(catalog.symbols));
+  } else {
+    out.push('\x01MARKET DATA LINK ......................... OK');
+    out.push('\x01VOLATILITY UNIT .......................... OK');
+    out.push('\x01MONTE CARLO ENGINE ....................... OK');
+    out.push('');
+    out.push('READY.');
+    out.push('');
+    out.push('\x01TYPE A TICKER SYMBOL AND PRESS RETURN.');
+    out.push('\x01EXAMPLES: AAPL   NVDA   MSFT   WDC');
+  }
+  out.push('');
+  return out;
+}
