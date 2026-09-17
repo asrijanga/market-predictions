@@ -1,7 +1,7 @@
 # market-predictions
 
 `mktpredict` is a Go command-line tool for finding and timing call-option
-trades on US stocks. It has three commands:
+trades on US stocks, with a browser front end. Six commands:
 
 | Command | What it does |
 | --- | --- |
@@ -13,8 +13,12 @@ trades on US stocks. It has three commands:
 | `cache` | Reports on, or prunes, the DuckDB database of computed analyses. |
 
 Everything runs locally against public data endpoints (Nasdaq, Google News
-RSS, SEC EDGAR). There are no dependencies outside the Go standard library,
-no API keys and no network calls beyond the data fetch.
+RSS, SEC EDGAR). No API keys, no accounts, and no network calls beyond
+fetching that data.
+
+The only dependency is DuckDB, which stores computed analyses so a repeated
+question is instant. Its Go driver uses cgo, so building needs a C
+toolchain and `CGO_ENABLED=0` builds are not available.
 
 ## Install
 
@@ -28,6 +32,9 @@ or from a checkout:
 go build -o mktpredict ./cmd/mktpredict
 ```
 
+Both need a C compiler on the path, for DuckDB. The `Dockerfile` has a
+working toolchain if you would rather not install one.
+
 ## Quick start
 
 ```sh
@@ -40,6 +47,9 @@ mktpredict pack AAPL
 
 # 3. Model when to buy
 mktpredict analyze AAPL
+
+# 4. Or use the browser front end, which answers one ticker at a time
+mktpredict serve
 ```
 
 ## `scan`
@@ -298,6 +308,12 @@ mktpredict serve -db ""                     # or run without a database
 mktpredict build-site -refresh              # recompute even on a hit
 ```
 
+`serve` and `build-site` read and write it. The `analyze` subcommand does
+not: it always recomputes, because a one-off run from a terminal is usually
+asking for a fresh answer. DuckDB allows a single writer and no readers
+beside it, so `cache` opens read-only and reports the holder rather than a
+driver error if the server is running.
+
 The database defaults to `analyses.duckdb` in the cache directory and holds
 two tables: `analyses`, the cache itself, and `requests`, an anonymous count
 of questions and cache hits. It never leaves the machine it is written on.
@@ -340,6 +356,7 @@ So the analysis runs ahead of time and the site serves the answers:
 
 ```sh
 mktpredict build-site -out dist -top 500              # the published default
+mktpredict build-site -out dist -top 640 -workers 6   # ask for more, to land ~500
 mktpredict build-site -out dist -symbols AAPL,NVDA    # or choose your own
 ```
 
@@ -347,10 +364,16 @@ That writes the front end, one `data/SYMBOL.json` per analysis, a
 `data/index.json` describing the set, and `.nojekyll` so Pages does not run
 the output through Jekyll.
 
-The published default is the 500 largest US-listed stocks that clear the
-screener's liquidity filters. A cold build of all 500 takes about a quarter
-of an hour at six workers; with the database warm it is seconds, because
-only symbols whose market day has moved on are recomputed.
+`-top N` asks the screener for the N largest US-listed stocks, and fewer
+than N are published: about a fifth are dropped for having too little price
+history, no listed options, or no call strikes that clear the liquidity
+filters. A real run of 640 published 487, at 2.7 MB in total. Publishing a
+name with nothing behind it would be worse than leaving it out, so the
+count is what survived rather than what was asked for.
+
+A cold build of that size takes about a quarter of an hour at six workers.
+With the database warm it is seconds, because only symbols whose market day
+has moved on are recomputed.
 
 A published site answers for the symbols it holds and says so plainly about
 the rest. Ask it for something outside the set and it replies `I DON'T KNOW`,
@@ -359,11 +382,25 @@ through what it does have. The live server has no such limit: it analyses
 whatever you type.
 
 `.github/workflows/pages.yml` runs it on every push to `main`, on a weekday
-schedule after the US close, and on demand with a symbol list. To turn it on,
-set **Settings → Pages → Source** to **GitHub Actions** once. No secrets are
-needed: the model reads prices, options and the earnings date, none of which
-require a key, and the site build skips headlines and filings because they
-feed the written brief rather than the model.
+schedule after the US close, and on demand with a symbol list or a different
+`-top`. No secrets are needed: the model reads prices, options and the
+earnings date, none of which require a key, and the site build skips
+headlines and filings because they feed the written brief rather than the
+model.
+
+The workflow enables Pages itself, and checks it can before starting the
+build rather than after, so a destination problem fails in seconds instead
+of a quarter of an hour. **Pages on a private repository requires a paid
+plan**; on a free plan it is available only for public repositories. Where
+the plan does not allow it the run stops at that first step with:
+
+```
+Get Pages site failed / Resource not accessible by integration
+```
+
+which means the repository is private on a plan without Pages, not that
+anything is misconfigured. Make the repository public, upgrade the plan, or
+host the live server instead.
 
 The page works the same either way. It looks for `data/index.json` at boot:
 finding one, it reads the published set and says so on screen and under every
@@ -378,7 +415,7 @@ for one and the terminal says so and lists what it has.
 
 | Option | What you get | What it costs |
 | --- | --- | --- |
-| **GitHub Pages** | The published set, free and with no server to run. Answers only for symbols the workflow computed. | Free |
+| **GitHub Pages** | The published set, with no server to run. Answers only for symbols the workflow computed, and says `I DON'T KNOW` for the rest. | Free for a public repository; a private one needs a paid plan |
 | **Fly.io with a volume** | The live machine: any symbol on demand, with the DuckDB cache surviving deploys. The best fit, because the cache wants a persistent disk. | A few dollars a month |
 | **A small VPS** | The same thing with more control. Run the binary under systemd behind a reverse proxy, or the container. | A few dollars a month |
 | **Google Cloud Run** | Scales to zero, so it is nearly free when idle. Its filesystem is ephemeral, so the cache resets whenever an instance recycles and only helps within one. | Usage based |
@@ -399,19 +436,28 @@ answers for anything else.
 
 ## Runtime
 
-* A `pack` run is five to seven seconds cold (six concurrent fetches) and
-  under 50 ms cached. The model in `analyze` adds about three seconds for
-  20,000 paths: two year-long simulations for the forecast, seven shorter
-  ones for the drift sensitivity, and roughly two thousand priced plans,
-  spread across CPUs.
-* A cold `scan` over 150 names takes roughly 15 to 20 seconds and is bound by
-  Nasdaq's per-request latency, not CPU. Raise `-concurrency` if the API
-  tolerates it.
-* Responses are cached under the user cache directory keyed by request date,
-  so repeat runs on the same day finish in well under a second. Use
-  `-no-cache` to force a refresh intraday.
-* All analysis is single-pass over float slices with closed-form regression
-  sums. Analysing hundreds of symbols costs a few milliseconds.
+Measured, not estimated:
+
+| Operation | Cold | Warm |
+| --- | --- | --- |
+| `pack` for one symbol | 3 to 7s | under 50 ms |
+| The model inside `analyze` | about 3s | n/a, `analyze` does not use the database |
+| One analysis over the API | 2.9s | 12ms |
+| `scan` over 150 names | 15 to 20s | about 2.5s |
+| `build-site` for 487 symbols | about 15 min at six workers | seconds |
+
+* The fetches dominate everything cold. A `pack` makes six concurrent
+  requests, and `scan` is bound by Nasdaq's per-request latency rather than
+  by CPU: raise `-concurrency` if the API tolerates it.
+* The model's three seconds are two year-long simulations for the forecast,
+  seven shorter ones for the drift sensitivity, and roughly two thousand
+  priced plans, spread across CPUs. The indicator maths either side of that
+  is single-pass over float slices with closed-form regression sums, and
+  costs milliseconds even over hundreds of symbols.
+* Two caches sit behind these numbers and they are different things. HTTP
+  responses are cached on disk by request date, which saves the fetch;
+  `-no-cache` forces a refresh intraday. Whole analyses are cached in
+  DuckDB, which saves the computation as well.
 
 ## Limitations
 
