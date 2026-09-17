@@ -10,11 +10,38 @@ scene.background = new THREE.Color(0x05040a);
 scene.fog = new THREE.Fog(0x05040a, 7, 24);
 
 const camera = new THREE.PerspectiveCamera(42, innerWidth / innerHeight, 0.1, 100);
-// Far enough back that the whole machine, the keyboard and the room read as
-// one object; the screen is still legible because the tube is large.
 // The default frame puts the screen large enough to read; scrolling pulls
 // back far enough to see the whole machine in its room.
 const view = { orbit: 5.9, minOrbit: 4.6, maxOrbit: 15 };
+
+// The tube is half again as wide as it is tall, so a portrait phone runs
+// out of width long before it runs out of height. A perspective camera is
+// framed by its *vertical* angle, which means holding one distance for
+// every viewport crops the sides off exactly where the text lives. Solve
+// instead for the distance at which both axes of the glass fit, and treat
+// that as the closest the view may come.
+const SCREEN = { w: 3.78, h: 2.8, z: 0.8 };
+function fitOrbit() {
+  const margin = 1.08; // a little room so the bezel is not flush with the edge
+  const half = Math.tan(THREE.MathUtils.degToRad(camera.fov) / 2);
+  const forHeight = (SCREEN.h / 2) * margin / half;
+  const forWidth = (SCREEN.w / 2) * margin / (half * camera.aspect);
+  return Math.max(forHeight, forWidth) + SCREEN.z;
+}
+
+// Reframe whenever the viewport changes: a rotation from portrait to
+// landscape is a resize, and the two want very different distances.
+function fitView() {
+  const wasFramed = view.orbit <= view.minOrbit + 1e-3;
+  view.minOrbit = fitOrbit();
+  view.maxOrbit = Math.max(15, view.minOrbit * 1.6);
+  // Opening at the closest fitting distance keeps the text as large as it
+  // can be; a wide viewport still gets the roomier default.
+  view.orbit = wasFramed
+    ? view.minOrbit
+    : THREE.MathUtils.clamp(view.orbit, view.minOrbit, view.maxOrbit);
+}
+fitView();
 camera.position.set(0, 1.1, view.orbit);
 
 const renderer = new THREE.WebGLRenderer({ antialias: true });
@@ -140,6 +167,12 @@ const fan = new PathFan();
 const proxy = document.getElementById('keyboard-proxy');
 const hint = document.getElementById('hint');
 const gate = document.getElementById('boot-gate');
+
+// There is no wheel on a touch screen, and naming a gesture nobody can
+// perform only pushes the line onto a second row.
+if (matchMedia('(pointer: coarse)').matches) {
+  hint.textContent = 'tap to type \u00b7 enter to run';
+}
 
 const state = {
   mode: 'off',       // off | booting | ready | working
@@ -344,6 +377,7 @@ addEventListener('resize', () => {
   camera.aspect = innerWidth / innerHeight;
   camera.updateProjectionMatrix();
   renderer.setSize(innerWidth, innerHeight);
+  fitView();
 });
 
 // ------------------------------------------------------------------- frame

@@ -16,7 +16,9 @@
     top: 50%; left: 50%; width: 1px; height: 1px; border: 0;
   }
   #hint {
-    position: fixed; left: 0; right: 0; bottom: 14px; text-align: center;
+    position: fixed; left: 0; right: 0; text-align: center;
+    bottom: calc(14px + env(safe-area-inset-bottom, 0px));
+    padding: 0 16px;
     font: 12px/1.6 ui-monospace, "SF Mono", Menlo, Consolas, monospace;
     color: #2f6f4a; letter-spacing: .18em; text-transform: uppercase;
     pointer-events: none; transition: opacity .6s ease; text-shadow: 0 0 8px #0d3;
