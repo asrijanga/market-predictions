@@ -147,8 +147,7 @@ const state = {
   input: '',
   stream: null,
   keyFlash: 0,
-  field: 'ticker',   // what the prompt is currently collecting
-  email: '',
+  listPage: 0,
   // catalog is set when the page is served statically: a published site
   // cannot run the model or reach the data providers from a browser, so it
   // ships the answers instead.
@@ -176,43 +175,6 @@ function typeOut(lines, done) {
   tick();
 }
 
-const EMAIL_KEY = 'mktpredict.email';
-
-function readStoredEmail() {
-  try {
-    const stored = localStorage.getItem(EMAIL_KEY);
-    return stored && report.validEmail(stored) ? stored : '';
-  } catch {
-    return '';   // private browsing, or storage disabled
-  }
-}
-
-function storeEmail(email) {
-  try { localStorage.setItem(EMAIL_KEY, email); } catch { /* not essential */ }
-}
-
-// askForEmail puts the machine into the state where the prompt collects an
-// address. Nothing is analysed until one has been given.
-function askForEmail() {
-  state.field = 'email';
-  state.input = '';
-  terminal.setInput('');
-  terminal.write('');
-  terminal.write('\x01 AN EMAIL ADDRESS IS REQUIRED BEFORE ANY ANALYSIS RUNS.');
-  terminal.setPrompt('EMAIL \u25b6 ');
-}
-
-function askForTicker(greet) {
-  state.field = 'ticker';
-  state.input = '';
-  terminal.setInput('');
-  if (greet) {
-    terminal.write('');
-    terminal.write(`\x01 SIGNED IN AS ${state.email.toUpperCase()}. TYPE "EMAIL" TO CHANGE IT.`);
-  }
-  terminal.setPrompt('\u25b6 ');
-}
-
 async function powerOn() {
   if (state.mode !== 'off') return;
   state.mode = 'booting';
@@ -220,43 +182,27 @@ async function powerOn() {
   lamp.material.emissiveIntensity = 2.4;
   terminal.clear();
   state.catalog = await loadCatalog();
-  state.email = readStoredEmail();
   typeOut(report.boot(state.catalog), () => {
     state.mode = 'ready';
-    state.email ? askForTicker(true) : askForEmail();
+    terminal.setPrompt('\u25b6 ');
     hint.classList.remove('gone');
   });
   proxy.focus({ preventScroll: true });
-}
-
-// submitEmail accepts an address, or explains why it will not.
-function submitEmail(value) {
-  const email = value.trim();
-  if (!report.validEmail(email)) {
-    terminal.write(`\x02 ${email || '(nothing)'} IS NOT A VALID ADDRESS`);
-    terminal.write('\x01 EXPECTED SOMETHING LIKE NAME@EXAMPLE.COM');
-    state.input = '';
-    terminal.setInput('');
-    return;
-  }
-  state.email = email;
-  storeEmail(email);
-  terminal.write(`\x01 THANK YOU. SIGNED IN AS ${email.toUpperCase()}.`);
-  askForTicker(false);
 }
 
 function submit(symbol) {
   if (state.mode !== 'ready' || !symbol) return;
   const clean = symbol.toUpperCase().replace(/[^A-Z.\-]/g, '');
   if (!clean) return;
-  // A change of address is a command, not a ticker.
-  if (clean === 'EMAIL') {
+
+  // LIST pages through the catalogue; it is a command, not a ticker.
+  if (clean === 'LIST' && state.catalog) {
     state.input = '';
     terminal.setInput('');
-    askForEmail();
+    terminal.clear();
+    finish(report.listPage(state.catalog, state.listPage++));
     return;
   }
-  if (!state.email) { askForEmail(); return; }
 
   state.mode = 'working';
   state.input = '';
@@ -272,8 +218,7 @@ function submit(symbol) {
 
   if (state.catalog) { runStatic(clean, nextFan); return; }
 
-  const query = `symbol=${encodeURIComponent(clean)}&email=${encodeURIComponent(state.email)}`;
-  const stream = new EventSource(`/api/analyze?${query}`);
+  const stream = new EventSource(`/api/analyze?symbol=${encodeURIComponent(clean)}`);
   state.stream = stream;
 
   stream.addEventListener('stage', (e) => {
@@ -302,13 +247,7 @@ function submit(symbol) {
 async function runStatic(symbol, fan) {
   const known = state.catalog.symbols.some((s) => s.symbol === symbol);
   if (!known) {
-    finish([
-      '',
-      `\x02 ${symbol} IS NOT IN THIS PUBLISHED SET`,
-      '',
-      '\x01 THIS COPY SERVES PRECOMPUTED ANALYSES. AVAILABLE:',
-      ...report.symbolColumns(state.catalog.symbols),
-    ]);
+    finish(report.unknown(symbol, state.catalog));
     return;
   }
   const stages = state.catalog.stages?.length ? state.catalog.stages : ['loading published analysis'];
@@ -355,18 +294,13 @@ function onKey(e) {
   state.keyFlash = 1;
 
   if (e.key === 'Enter') {
-    if (state.mode === 'ready' && state.field === 'email') submitEmail(state.input);
-    else submit(state.input);
+    submit(state.input);
     e.preventDefault();
     return;
   }
   if (state.mode !== 'ready') return;
   if (e.key === 'Backspace') {
     state.input = state.input.slice(0, -1);
-  } else if (state.field === 'email') {
-    // An address needs a wider alphabet than a ticker, and its own case.
-    if (e.key.length !== 1 || !/[A-Za-z0-9@._+\-]/.test(e.key) || state.input.length >= 60) return;
-    state.input += e.key;
   } else if (e.key.length === 1 && /[a-zA-Z.\-]/.test(e.key) && state.input.length < 6) {
     state.input += e.key.toUpperCase();
   } else {

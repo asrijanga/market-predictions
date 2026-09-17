@@ -255,3 +255,35 @@ func TestBreakEvenTextHandlesOutOfRange(t *testing.T) {
 		t.Errorf("got %q", got)
 	}
 }
+
+func TestAnalyzeCoversEveryTradableExpiry(t *testing.T) {
+	p := testPack(t)
+	// Blank the at-the-money volatility on the furthest monthly expiry, as
+	// happens when the quotes there will not solve. Its strikes are still
+	// liquid, so contracts are still drawn from it.
+	last := &p.Expiries[len(p.Expiries)-1]
+	furthest := last.Days
+	last.ATMCallIV = 0
+
+	o := Defaults()
+	o.Paths = 2000
+	r, err := Analyze(p, o)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if r.Horizon < furthest {
+		t.Fatalf("horizon %d does not reach the furthest tradable expiry %d", r.Horizon, furthest)
+	}
+	for _, c := range r.Contracts {
+		if c.ExpiryIdx > r.Horizon {
+			t.Errorf("contract expiring at %d is past the horizon %d", c.ExpiryIdx, r.Horizon)
+		}
+	}
+	// Every reported plan must carry a full sensitivity curve, which is
+	// what indexes the shorter simulations.
+	for _, s := range r.Strategies {
+		if len(s.DriftCurve) != len(DriftGrid) {
+			t.Errorf("plan missing its drift curve: %d points", len(s.DriftCurve))
+		}
+	}
+}

@@ -197,3 +197,19 @@ func TestTopDistinctOnePlanPerTrigger(t *testing.T) {
 		t.Errorf("unexpected selection: %+v", got)
 	}
 }
+
+func TestEvaluateRefusesAContractPastTheSimulation(t *testing.T) {
+	// Sensitivity runs are simulated only as far as the furthest expiry, so
+	// a contract beyond that must yield no trade instead of reading off the
+	// end of the paths.
+	sim := fixedSim([][]float64{flat(41, 1.2), flat(41, 0.9)})
+	iv := make([]float64, 60)
+	for i := range iv {
+		iv[i] = 0.3
+	}
+	beyond := testContract(55, 330) // expires 15 days past the simulation
+	st := Evaluate(sim, 330, beyond, Window{StartIdx: 0, EndIdx: 5}, Trigger{Kind: TriggerImmediate}, iv, 0.04)
+	if st.PTrade != 0 || st.MeanReturn != 0 {
+		t.Fatalf("expected no trade, got %+v", st)
+	}
+}

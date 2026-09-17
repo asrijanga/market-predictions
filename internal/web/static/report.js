@@ -11,13 +11,6 @@ export function rule(char = '─') {
   return char.repeat(W);
 }
 
-// validEmail mirrors the check the server makes, so a typo is caught before
-// a request is sent rather than after.
-export function validEmail(address) {
-  return typeof address === 'string' && address.length <= 254 &&
-    /^[^@\s]+@[^@\s.]+(\.[^@\s.]+)+$/.test(address);
-}
-
 export function banner(view) {
   const stance = view.stance.toUpperCase();
   const score = `${view.score >= 0 ? '+' : ''}${view.score.toFixed(2)}`;
@@ -35,13 +28,69 @@ function arrow(direction) {
 
 // symbolColumns lays a symbol list out in columns that fit the screen.
 export function symbolColumns(symbols) {
-  const names = symbols.map((s) => s.symbol);
+  const names = symbols.map((s) => (typeof s === 'string' ? s : s.symbol));
   const perRow = 6;
   const out = [];
   for (let i = 0; i < names.length; i += perRow) {
     out.push('\x01 ' + names.slice(i, i + perRow).map((n) => pad(n, 8)).join(''));
   }
   return out;
+}
+
+// SYMBOLS_PER_PAGE fills the screen without scrolling the header off it.
+const SYMBOLS_PER_PAGE = 96;
+
+// sample picks n names spread across the whole set, so the examples on the
+// boot screen are not all filed under A.
+function sample(symbols, n) {
+  if (symbols.length <= n) return symbols.map((s) => s.symbol);
+  const stride = symbols.length / n;
+  const out = [];
+  for (let i = 0; i < n; i++) out.push(symbols[Math.floor(i * stride)].symbol);
+  return out;
+}
+
+// suggest finds names the person might have meant: a prefix of what they
+// typed, or a name that contains it.
+function suggest(query, symbols) {
+  const names = symbols.map((s) => s.symbol);
+  const starts = names.filter((n) => n.startsWith(query) || query.startsWith(n));
+  const contains = names.filter((n) => !starts.includes(n) && n.includes(query));
+  return [...starts, ...contains].slice(0, 12);
+}
+
+// unknown is the answer when the published set has nothing for a symbol.
+// The machine says so plainly rather than pretending, and points at what it
+// does have.
+export function unknown(symbol, catalog) {
+  const out = ['', `\x02 I DON'T KNOW ${symbol}.`, ''];
+  const near = suggest(symbol, catalog.symbols);
+  if (near.length) {
+    out.push('\x01 DID YOU MEAN:');
+    out.push(...symbolColumns(near));
+    out.push('');
+  }
+  out.push(`\x01 THIS MACHINE HOLDS ${catalog.symbols.length} SYMBOLS, COMPUTED ${catalog.asOf}.`);
+  out.push('\x01 IT ANSWERS FOR THOSE AND NOTHING ELSE.');
+  out.push('\x01 TYPE LIST TO PAGE THROUGH THEM.');
+  return out;
+}
+
+// listPage renders one page of the catalogue.
+export function listPage(catalog, page) {
+  const all = catalog.symbols;
+  const pages = Math.max(1, Math.ceil(all.length / SYMBOLS_PER_PAGE));
+  const current = ((page % pages) + pages) % pages;
+  const slice = all.slice(current * SYMBOLS_PER_PAGE, (current + 1) * SYMBOLS_PER_PAGE);
+  return [
+    '',
+    `\x02 CATALOGUE ${current * SYMBOLS_PER_PAGE + 1}-${current * SYMBOLS_PER_PAGE + slice.length} OF ${all.length}` +
+      (pages > 1 ? `   PAGE ${current + 1}/${pages}` : ''),
+    '',
+    ...symbolColumns(slice),
+    '',
+    pages > 1 ? '\x01 TYPE LIST AGAIN FOR THE NEXT PAGE.' : '',
+  ];
 }
 
 export function lines(view, catalog) {
@@ -113,7 +162,7 @@ function signalLine(s, sign) {
 // this is: one wired to a live model, or one serving a published set.
 export function boot(catalog) {
   const out = [
-    'MKTPREDICT 8000  (C) 1984 ASRIJANGA SYSTEMS',
+    'MKTPREDICT 8000  (C) 1984 MKTPREDICT SYSTEMS',
     '64K RAM SYSTEM   ANALYTIC COPROCESSOR PRESENT',
     '',
     '\x01SELF TEST ................................ OK',
@@ -124,9 +173,11 @@ export function boot(catalog) {
     out.push('');
     out.push('READY.');
     out.push('');
-    out.push(`\x01PUBLISHED SET OF ${catalog.symbols.length} SYMBOLS, COMPUTED ${catalog.asOf}.`);
-    out.push('\x01TYPE ONE AND PRESS RETURN:');
-    out.push(...symbolColumns(catalog.symbols));
+    out.push(`\x01${catalog.symbols.length} SYMBOLS ON FILE, COMPUTED ${catalog.asOf}.`);
+    out.push('\x01ANYTHING ELSE AND THIS MACHINE WILL SAY IT DOES NOT KNOW.');
+    out.push('');
+    out.push('\x01TYPE ONE AND PRESS RETURN, OR LIST TO SEE THEM ALL:');
+    out.push(...symbolColumns(sample(catalog.symbols, 18)));
   } else {
     out.push('\x01MARKET DATA LINK ......................... OK');
     out.push('\x01VOLATILITY UNIT .......................... OK');

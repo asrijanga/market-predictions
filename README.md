@@ -247,9 +247,8 @@ mktpredict serve -addr :9000 -paths 40000
 ```
 
 A CRT terminal on a desk, rendered in Three.js. Click to power the tube on,
-give an email address, type a ticker, press return. The machine answers and
-waits for the next one, and repeat questions come back from the database in
-milliseconds.
+type a ticker, press return. The machine answers and waits for the next one,
+and repeat questions come back from the database in milliseconds.
 
 * **The screen is a real terminal.** Text is drawn into a character grid on a
   2D canvas, uploaded as a texture, and put through a shader that does what a
@@ -300,25 +299,35 @@ mktpredict build-site -refresh              # recompute even on a hit
 ```
 
 The database defaults to `analyses.duckdb` in the cache directory and holds
-two tables: `analyses`, the cache itself, and `requests`, a log of which
-address asked for which symbol and whether it was served from the cache. It
-never leaves the machine it is written on.
+two tables: `analyses`, the cache itself, and `requests`, an anonymous count
+of questions and cache hits. It never leaves the machine it is written on.
 
 Bumping `model.Version` invalidates every cached answer, so any change that
 alters the output for the same inputs must bump it. DuckDB's Go driver needs
 cgo, so builds with `CGO_ENABLED=0` and simple cross-compilation are no
 longer available; the `Dockerfile` accounts for this.
 
-## Asking for an email
+## Personal data
 
-The front end asks for an email address before it will run anything, and the
-API rejects a request without a well-formed one. The address is remembered in
-the browser so it is asked for once, typing `EMAIL` at the prompt changes it,
-and each request is recorded in the `requests` table with the symbol and
-whether the cache answered it. Nothing is sent anywhere.
+The application collects none. It asks for a ticker symbol and nothing else:
+no account, no address, no cookie, no analytics, and no third-party script.
+The server logs a failed symbol and its reason, never a request's origin, and
+the front end stores nothing in the browser.
 
-On a published static site there is no server to record anything, so the
-address is only kept in the browser.
+The `requests` table in the database counts questions so the cache hit rate
+can be measured. It holds a timestamp, a symbol and whether the cache
+answered, which describes how the machine is used without describing who
+used it.
+
+An earlier version asked for an email address before running an analysis and
+recorded it with each question. Opening a database written by that version
+drops the old request log, so those addresses are erased rather than left in
+a file nobody looks at. The cache of analyses is untouched.
+
+The one address in the system belongs to whoever runs it: `-sec-contact`, or
+`SEC_CONTACT_EMAIL`, which the SEC requires in the User-Agent of automated
+requests to EDGAR. It is sent to the SEC, it identifies the operator rather
+than any user, and leaving it unset simply skips filings.
 
 ## Hosting it on GitHub Pages
 
@@ -330,14 +339,24 @@ either, with or without a backend.
 So the analysis runs ahead of time and the site serves the answers:
 
 ```sh
-mktpredict build-site -out dist                      # the default symbol set
-mktpredict build-site -out dist -symbols AAPL,NVDA   # or choose your own
-mktpredict build-site -out dist -top 40              # or the 40 largest stocks
+mktpredict build-site -out dist -top 500              # the published default
+mktpredict build-site -out dist -symbols AAPL,NVDA    # or choose your own
 ```
 
 That writes the front end, one `data/SYMBOL.json` per analysis, a
 `data/index.json` describing the set, and `.nojekyll` so Pages does not run
-the output through Jekyll. Six symbols take about twelve seconds and 760 KB.
+the output through Jekyll.
+
+The published default is the 500 largest US-listed stocks that clear the
+screener's liquidity filters. A cold build of all 500 takes about a quarter
+of an hour at six workers; with the database warm it is seconds, because
+only symbols whose market day has moved on are recomputed.
+
+A published site answers for the symbols it holds and says so plainly about
+the rest. Ask it for something outside the set and it replies `I DON'T KNOW`,
+suggests near matches for a mistyped ticker, and offers `LIST` to page
+through what it does have. The live server has no such limit: it analyses
+whatever you type.
 
 `.github/workflows/pages.yml` runs it on every push to `main`, on a weekday
 schedule after the US close, and on demand with a symbol list. To turn it on,

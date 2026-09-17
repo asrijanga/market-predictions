@@ -119,7 +119,10 @@ func Evaluate(sim *Sim, spot0 float64, c Contract, w Window, tr Trigger, ivByEnt
 // that need a Kelly stake use and the ranking search discards.
 func EvaluateDetailed(sim *Sim, spot0 float64, c Contract, w Window, tr Trigger, ivByEntry []float64, rate float64) (Stats, []float64) {
 	var st Stats
-	if sim.Paths == 0 {
+	// A contract expiring past the end of these paths cannot be priced on
+	// them. The callers keep the horizons aligned; this makes a mistake
+	// there produce no trade rather than an out-of-range read.
+	if sim.Paths == 0 || c.ExpiryIdx > sim.Horizon || c.ExpiryIdx >= len(ivByEntry) {
 		return st, nil
 	}
 	slip := 1 + 0.5*math.Max(0, c.SpreadPct)

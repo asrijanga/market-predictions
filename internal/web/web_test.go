@@ -4,9 +4,10 @@ import (
 	"bufio"
 	"context"
 	"errors"
+	"io"
+	"io/fs"
 	"net/http"
 	"net/http/httptest"
-	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
@@ -43,20 +44,17 @@ func readEvents(t *testing.T, url string) (events []string, data []string) {
 }
 
 func TestAnalyzeStreamsStagesThenResult(t *testing.T) {
-	srv := testServer(func(ctx context.Context, req Request, p Progress) (*View, error) {
-		if req.Symbol != "AAPL" {
-			t.Errorf("symbol = %q, want AAPL uppercased", req.Symbol)
-		}
-		if req.Email != "trader@example.com" {
-			t.Errorf("email = %q, not passed through", req.Email)
+	srv := testServer(func(ctx context.Context, symbol string, p Progress) (*View, error) {
+		if symbol != "AAPL" {
+			t.Errorf("symbol = %q, want AAPL uppercased", symbol)
 		}
 		p("fitting model", 0.4)
 		p("simulating paths", 0.8)
-		return &View{Symbol: req.Symbol, Stance: "bullish", Score: 0.5}, nil
+		return &View{Symbol: symbol, Stance: "bullish", Score: 0.5}, nil
 	})
 	defer srv.Close()
 
-	events, data := readEvents(t, srv.URL+"/api/analyze?symbol=aapl&email=trader@example.com")
+	events, data := readEvents(t, srv.URL+"/api/analyze?symbol=aapl")
 	if len(events) != 4 {
 		t.Fatalf("events = %v, want three stages and one result", events)
 	}
@@ -77,13 +75,13 @@ func TestAnalyzeStreamsStagesThenResult(t *testing.T) {
 }
 
 func TestAnalyzeRejectsBadSymbols(t *testing.T) {
-	srv := testServer(func(context.Context, Request, Progress) (*View, error) {
+	srv := testServer(func(context.Context, string, Progress) (*View, error) {
 		t.Fatal("analyzer should not run for a bad symbol")
 		return nil, nil
 	})
 	defer srv.Close()
 	for _, bad := range []string{"", "TOOLONGSYM", "../etc", "A B", "AAPL;DROP"} {
-		resp, err := http.Get(srv.URL + "/api/analyze?symbol=" + bad + "&email=a@b.com")
+		resp, err := http.Get(srv.URL + "/api/analyze?symbol=" + bad)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -95,11 +93,11 @@ func TestAnalyzeRejectsBadSymbols(t *testing.T) {
 }
 
 func TestAnalyzeSendsErrorEvent(t *testing.T) {
-	srv := testServer(func(context.Context, Request, Progress) (*View, error) {
+	srv := testServer(func(context.Context, string, Progress) (*View, error) {
 		return nil, errors.New("nasdaq: NOPE: symbol not found")
 	})
 	defer srv.Close()
-	events, data := readEvents(t, srv.URL+"/api/analyze?symbol=NOPE&email=a@b.com")
+	events, data := readEvents(t, srv.URL+"/api/analyze?symbol=NOPE")
 	if events[len(events)-1] != "error" {
 		t.Fatalf("events = %v, want an error last", events)
 	}
@@ -124,7 +122,7 @@ func TestUserMessageStaysReadable(t *testing.T) {
 }
 
 func TestIndexIsServed(t *testing.T) {
-	srv := testServer(func(context.Context, Request, Progress) (*View, error) { return nil, nil })
+	srv := testServer(func(context.Context, string, Progress) (*View, error) { return nil, nil })
 	defer srv.Close()
 	resp, err := http.Get(srv.URL + "/")
 	if err != nil {
@@ -139,17 +137,17 @@ func TestIndexIsServed(t *testing.T) {
 func TestConcurrencyIsBounded(t *testing.T) {
 	release := make(chan struct{})
 	started := make(chan struct{}, 8)
-	s := &Server{MaxConcurrent: 2, Analyze: func(ctx context.Context, req Request, p Progress) (*View, error) {
+	s := &Server{MaxConcurrent: 2, Analyze: func(ctx context.Context, symbol string, p Progress) (*View, error) {
 		started <- struct{}{}
 		<-release
-		return &View{Symbol: req.Symbol}, nil
+		return &View{Symbol: symbol}, nil
 	}}
 	srv := httptest.NewServer(s.Handler())
 	defer srv.Close()
 
 	for i := 0; i < 4; i++ {
 		go func() {
-			resp, err := http.Get(srv.URL + "/api/analyze?symbol=AAPL&email=a@b.com")
+			resp, err := http.Get(srv.URL + "/api/analyze?symbol=AAPL")
 			if err == nil {
 				resp.Body.Close()
 			}
@@ -228,35 +226,38 @@ func TestModelWarningsDropDataNotes(t *testing.T) {
 	}
 }
 
-func TestAnalyzeRequiresAnEmail(t *testing.T) {
-	srv := testServer(func(context.Context, Request, Progress) (*View, error) {
-		t.Fatal("analyzer should not run without an email")
-		return nil, nil
+func TestAnalyzeAsksForNothingButASymbol(t *testing.T) {
+	srv := testServer(func(ctx context.Context, symbol string, p Progress) (*View, error) {
+		return &View{Symbol: symbol}, nil
 	})
 	defer srv.Close()
-	for _, bad := range []string{"", "nobody", "no@domain", "a b@example.com", "@example.com"} {
-		resp, err := http.Get(srv.URL + "/api/analyze?symbol=AAPL&email=" + url.QueryEscape(bad))
-		if err != nil {
-			t.Fatal(err)
-		}
-		resp.Body.Close()
-		if resp.StatusCode != http.StatusBadRequest {
-			t.Errorf("email %q returned %d, want 400", bad, resp.StatusCode)
-		}
-	}
-}
 
-func TestValidEmail(t *testing.T) {
-	good := []string{"a@b.co", "first.last@example.com", "x+tag@sub.example.co.uk"}
-	bad := []string{"", "nobody", "a@b", "a b@example.com", "two@@example.com", strings.Repeat("x", 250) + "@example.com"}
-	for _, e := range good {
-		if !ValidEmail(e) {
-			t.Errorf("%q should be accepted", e)
-		}
+	// A request carrying an identifier still works, and the identifier is
+	// ignored rather than read, stored or required.
+	resp, err := http.Get(srv.URL + "/api/analyze?symbol=AAPL&email=someone@example.com")
+	if err != nil {
+		t.Fatal(err)
 	}
-	for _, e := range bad {
-		if ValidEmail(e) {
-			t.Errorf("%q should be rejected", e)
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status = %d", resp.StatusCode)
+	}
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(body), "someone@example.com") {
+		t.Error("the response echoed an address back")
+	}
+
+	// The front end must not ask for one either.
+	page, err := fs.ReadFile(Assets(), "app.js")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, banned := range []string{"email", "localStorage"} {
+		if strings.Contains(strings.ToLower(string(page)), strings.ToLower(banned)) {
+			t.Errorf("app.js still refers to %q", banned)
 		}
 	}
 }
