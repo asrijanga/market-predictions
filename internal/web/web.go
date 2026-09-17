@@ -61,28 +61,15 @@ func WriteStatic(dir string) error {
 // ticker, optionally with a share-class suffix.
 var symbolPattern = regexp.MustCompile(`^[A-Z]{1,6}([.\-][A-Z])?$`)
 
-// emailPattern is a deliberately loose check. The point is to catch a
-// typo before an analysis runs, not to decide what a valid address is;
-// only delivery can do that, and this address is never delivered to.
-var emailPattern = regexp.MustCompile(`^[^@\s]+@[^@\s.]+(\.[^@\s.]+)+$`)
-
-// ValidEmail reports whether an address is well formed enough to accept.
-func ValidEmail(address string) bool {
-	return len(address) <= 254 && emailPattern.MatchString(address)
-}
-
 // Progress reports one stage of the pipeline.
 type Progress func(stage string, fraction float64)
 
 // Analyzer runs the pipeline for one symbol, reporting progress as it goes.
-// The email identifies who asked; it is recorded alongside the request.
-type Analyzer func(ctx context.Context, req Request, p Progress) (*View, error)
-
-// Request is one question put to the machine.
-type Request struct {
-	Symbol string
-	Email  string
-}
+//
+// A symbol is the whole of the request on purpose. The machine asks for
+// nothing about the person asking, so there is no identifier to pass here,
+// store, or later have to justify holding.
+type Analyzer func(ctx context.Context, symbol string, p Progress) (*View, error)
 
 // Server wires the static assets to an analyzer.
 type Server struct {
@@ -111,11 +98,6 @@ func (s *Server) handleAnalyze(w http.ResponseWriter, r *http.Request) {
 	symbol := strings.ToUpper(strings.TrimSpace(r.URL.Query().Get("symbol")))
 	if !symbolPattern.MatchString(symbol) {
 		http.Error(w, "bad symbol", http.StatusBadRequest)
-		return
-	}
-	email := strings.TrimSpace(r.URL.Query().Get("email"))
-	if !ValidEmail(email) {
-		http.Error(w, "an email address is required", http.StatusBadRequest)
 		return
 	}
 	flusher, ok := w.(http.Flusher)
@@ -148,7 +130,7 @@ func (s *Server) handleAnalyze(w http.ResponseWriter, r *http.Request) {
 	}
 
 	send("stage", stageEvent{Stage: "contacting exchange", Fraction: 0.02})
-	view, err := s.Analyze(r.Context(), Request{Symbol: symbol, Email: email}, func(stage string, fraction float64) {
+	view, err := s.Analyze(r.Context(), symbol, func(stage string, fraction float64) {
 		send("stage", stageEvent{Stage: stage, Fraction: fraction})
 	})
 	if err != nil {

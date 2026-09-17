@@ -49,7 +49,6 @@ CREATE TABLE IF NOT EXISTS analyses (
 );
 CREATE TABLE IF NOT EXISTS requests (
 	requested_at TIMESTAMP NOT NULL,
-	email        TEXT      NOT NULL,
 	symbol       TEXT      NOT NULL,
 	cached       BOOLEAN   NOT NULL
 );
@@ -69,6 +68,10 @@ func Open(path string) (*Store, error) {
 	// DuckDB takes a single writer, so one connection avoids lock contention
 	// between concurrent analyses.
 	db.SetMaxOpenConns(1)
+	if err := dropLegacyIdentifiers(db); err != nil {
+		db.Close()
+		return nil, err
+	}
 	if _, err := db.Exec(schema); err != nil {
 		db.Close()
 		if isLockError(err) {
@@ -77,6 +80,27 @@ func Open(path string) (*Store, error) {
 		return nil, fmt.Errorf("store: schema: %w", err)
 	}
 	return &Store{db: db}, nil
+}
+
+// dropLegacyIdentifiers removes the request log written by versions that
+// recorded an email address with each question. The table held nothing but
+// that log, so dropping it erases the addresses rather than leaving them in
+// a file nobody looks at.
+func dropLegacyIdentifiers(db *sql.DB) error {
+	var found int
+	err := db.QueryRow(`
+		SELECT count(*) FROM information_schema.columns
+		WHERE table_name = 'requests' AND column_name = 'email'`).Scan(&found)
+	if err != nil {
+		return fmt.Errorf("store: inspect requests: %w", err)
+	}
+	if found == 0 {
+		return nil
+	}
+	if _, err := db.Exec(`DROP TABLE requests`); err != nil {
+		return fmt.Errorf("store: drop legacy requests: %w", err)
+	}
+	return nil
 }
 
 // OpenReadOnly opens an existing database for inspection. It still needs
@@ -168,16 +192,16 @@ func (s *Store) Put(ctx context.Context, key Key, view json.RawMessage, compute 
 	return nil
 }
 
-// RecordRequest logs who asked for what. It is deliberately separate from
-// the cache: the cache is keyed by what was computed, this is a record of
-// what was wanted.
-func (s *Store) RecordRequest(ctx context.Context, email, symbol string, cached bool) error {
+// RecordRequest counts a question and whether the cache answered it. It
+// records no identifier of any kind, so the table says how the machine is
+// used without saying by whom.
+func (s *Store) RecordRequest(ctx context.Context, symbol string, cached bool) error {
 	if s == nil {
 		return nil
 	}
 	_, err := s.db.ExecContext(ctx,
-		`INSERT INTO requests (requested_at, email, symbol, cached) VALUES (?, ?, ?, ?)`,
-		time.Now().UTC(), email, symbol, cached)
+		`INSERT INTO requests (requested_at, symbol, cached) VALUES (?, ?, ?)`,
+		time.Now().UTC(), symbol, cached)
 	if err != nil {
 		return fmt.Errorf("store: record request: %w", err)
 	}

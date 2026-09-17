@@ -2,6 +2,7 @@ package store
 
 import (
 	"context"
+	"database/sql"
 	"encoding/json"
 	"errors"
 	"path/filepath"
@@ -112,11 +113,8 @@ func TestRequestsAndStats(t *testing.T) {
 	if err := s.Put(ctx, testKey("NVDA", day), json.RawMessage(`{}`), 6*time.Second); err != nil {
 		t.Fatal(err)
 	}
-	for _, r := range []struct {
-		email  string
-		cached bool
-	}{{"a@example.com", false}, {"a@example.com", true}, {"b@example.com", true}} {
-		if err := s.RecordRequest(ctx, r.email, "AAPL", r.cached); err != nil {
+	for _, cached := range []bool{false, true, true} {
+		if err := s.RecordRequest(ctx, "AAPL", cached); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -169,7 +167,7 @@ func TestNilStoreIsUsable(t *testing.T) {
 	if err := s.Put(ctx, testKey("AAPL", time.Now()), json.RawMessage(`{}`), 0); err != nil {
 		t.Errorf("nil store Put: %v", err)
 	}
-	if err := s.RecordRequest(ctx, "a@b.com", "AAPL", false); err != nil {
+	if err := s.RecordRequest(ctx, "AAPL", false); err != nil {
 		t.Errorf("nil store RecordRequest: %v", err)
 	}
 	if err := s.Close(); err != nil {
@@ -218,5 +216,86 @@ func TestOpenReportsALockedDatabase(t *testing.T) {
 	}
 	if _, err := OpenReadOnly(path); !errors.Is(err, ErrLocked) {
 		t.Fatalf("second open returned %v, want ErrLocked", err)
+	}
+}
+
+func TestRequestsHoldNoIdentifier(t *testing.T) {
+	s := testStore(t)
+	ctx := context.Background()
+	if err := s.RecordRequest(ctx, "AAPL", false); err != nil {
+		t.Fatal(err)
+	}
+	rows, err := s.db.QueryContext(ctx,
+		`SELECT column_name FROM information_schema.columns WHERE table_name = 'requests'`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer rows.Close()
+	var columns []string
+	for rows.Next() {
+		var name string
+		if err := rows.Scan(&name); err != nil {
+			t.Fatal(err)
+		}
+		columns = append(columns, name)
+	}
+	for _, name := range columns {
+		switch name {
+		case "email", "ip", "user", "name", "address":
+			t.Errorf("requests carries an identifying column: %s", name)
+		}
+	}
+	if len(columns) != 3 {
+		t.Errorf("columns = %v, want exactly requested_at, symbol and cached", columns)
+	}
+}
+
+func TestOpenErasesAddressesFromAnOlderDatabase(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "legacy.duckdb")
+
+	// Build a database in the shape an earlier version wrote.
+	legacy, err := sql.Open("duckdb", path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := legacy.Exec(`
+		CREATE TABLE requests (
+			requested_at TIMESTAMP NOT NULL,
+			email        TEXT      NOT NULL,
+			symbol       TEXT      NOT NULL,
+			cached       BOOLEAN   NOT NULL
+		);
+		INSERT INTO requests VALUES (now(), 'someone@example.com', 'AAPL', false);`); err != nil {
+		t.Fatal(err)
+	}
+	if err := legacy.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	s, err := Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+
+	var withEmail int
+	if err := s.db.QueryRow(`
+		SELECT count(*) FROM information_schema.columns
+		WHERE table_name = 'requests' AND column_name = 'email'`).Scan(&withEmail); err != nil {
+		t.Fatal(err)
+	}
+	if withEmail != 0 {
+		t.Error("opening an older database left the email column in place")
+	}
+	var rows int
+	if err := s.db.QueryRow(`SELECT count(*) FROM requests`).Scan(&rows); err != nil {
+		t.Fatal(err)
+	}
+	if rows != 0 {
+		t.Errorf("%d old request rows survived; the addresses should be gone", rows)
+	}
+	// The cache itself must be untouched by the migration.
+	if err := s.RecordRequest(context.Background(), "AAPL", true); err != nil {
+		t.Fatal(err)
 	}
 }

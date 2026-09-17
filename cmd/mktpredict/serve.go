@@ -64,11 +64,10 @@ func serveCommand(ctx context.Context, args []string, out io.Writer) error {
 
 	srv := &web.Server{
 		MaxConcurrent: *concurrency,
-		Analyze: func(ctx context.Context, req web.Request, progress web.Progress) (*web.View, error) {
+		Analyze: func(ctx context.Context, symbol string, progress web.Progress) (*web.View, error) {
 			ctx, cancel := context.WithTimeout(ctx, *timeout)
 			defer cancel()
 
-			symbol := req.Symbol
 			now := marketNow()
 			key := store.Key{
 				Symbol: symbol, AsOf: now, Paths: *paths,
@@ -83,7 +82,7 @@ func serveCommand(ctx context.Context, args []string, out io.Writer) error {
 				if err := json.Unmarshal(body, &view); err == nil {
 					view.Cached = true
 					progress("reading the stored analysis", 1)
-					if err := db.RecordRequest(ctx, req.Email, symbol, true); err != nil {
+					if err := db.RecordRequest(ctx, symbol, true); err != nil {
 						log.Printf("record request: %v", err)
 					}
 					return &view, nil
@@ -116,7 +115,7 @@ func serveCommand(ctx context.Context, args []string, out io.Writer) error {
 			} else if err := db.Put(ctx, key, body, time.Since(started)); err != nil {
 				log.Printf("cache write %s: %v", symbol, err)
 			}
-			if err := db.RecordRequest(ctx, req.Email, symbol, false); err != nil {
+			if err := db.RecordRequest(ctx, symbol, false); err != nil {
 				log.Printf("record request: %v", err)
 			}
 			return view, nil

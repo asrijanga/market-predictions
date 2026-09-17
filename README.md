@@ -247,9 +247,8 @@ mktpredict serve -addr :9000 -paths 40000
 ```
 
 A CRT terminal on a desk, rendered in Three.js. Click to power the tube on,
-give an email address, type a ticker, press return. The machine answers and
-waits for the next one, and repeat questions come back from the database in
-milliseconds.
+type a ticker, press return. The machine answers and waits for the next one,
+and repeat questions come back from the database in milliseconds.
 
 * **The screen is a real terminal.** Text is drawn into a character grid on a
   2D canvas, uploaded as a texture, and put through a shader that does what a
@@ -300,25 +299,35 @@ mktpredict build-site -refresh              # recompute even on a hit
 ```
 
 The database defaults to `analyses.duckdb` in the cache directory and holds
-two tables: `analyses`, the cache itself, and `requests`, a log of which
-address asked for which symbol and whether it was served from the cache. It
-never leaves the machine it is written on.
+two tables: `analyses`, the cache itself, and `requests`, an anonymous count
+of questions and cache hits. It never leaves the machine it is written on.
 
 Bumping `model.Version` invalidates every cached answer, so any change that
 alters the output for the same inputs must bump it. DuckDB's Go driver needs
 cgo, so builds with `CGO_ENABLED=0` and simple cross-compilation are no
 longer available; the `Dockerfile` accounts for this.
 
-## Asking for an email
+## Personal data
 
-The front end asks for an email address before it will run anything, and the
-API rejects a request without a well-formed one. The address is remembered in
-the browser so it is asked for once, typing `EMAIL` at the prompt changes it,
-and each request is recorded in the `requests` table with the symbol and
-whether the cache answered it. Nothing is sent anywhere.
+The application collects none. It asks for a ticker symbol and nothing else:
+no account, no address, no cookie, no analytics, and no third-party script.
+The server logs a failed symbol and its reason, never a request's origin, and
+the front end stores nothing in the browser.
 
-On a published static site there is no server to record anything, so the
-address is only kept in the browser.
+The `requests` table in the database counts questions so the cache hit rate
+can be measured. It holds a timestamp, a symbol and whether the cache
+answered, which describes how the machine is used without describing who
+used it.
+
+An earlier version asked for an email address before running an analysis and
+recorded it with each question. Opening a database written by that version
+drops the old request log, so those addresses are erased rather than left in
+a file nobody looks at. The cache of analyses is untouched.
+
+The one address in the system belongs to whoever runs it: `-sec-contact`, or
+`SEC_CONTACT_EMAIL`, which the SEC requires in the User-Agent of automated
+requests to EDGAR. It is sent to the SEC, it identifies the operator rather
+than any user, and leaving it unset simply skips filings.
 
 ## Hosting it on GitHub Pages
 
