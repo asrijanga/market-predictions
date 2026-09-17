@@ -339,14 +339,24 @@ either, with or without a backend.
 So the analysis runs ahead of time and the site serves the answers:
 
 ```sh
-mktpredict build-site -out dist                      # the default symbol set
-mktpredict build-site -out dist -symbols AAPL,NVDA   # or choose your own
-mktpredict build-site -out dist -top 40              # or the 40 largest stocks
+mktpredict build-site -out dist -top 500              # the published default
+mktpredict build-site -out dist -symbols AAPL,NVDA    # or choose your own
 ```
 
 That writes the front end, one `data/SYMBOL.json` per analysis, a
 `data/index.json` describing the set, and `.nojekyll` so Pages does not run
-the output through Jekyll. Six symbols take about twelve seconds and 760 KB.
+the output through Jekyll.
+
+The published default is the 500 largest US-listed stocks that clear the
+screener's liquidity filters. A cold build of all 500 takes about a quarter
+of an hour at six workers; with the database warm it is seconds, because
+only symbols whose market day has moved on are recomputed.
+
+A published site answers for the symbols it holds and says so plainly about
+the rest. Ask it for something outside the set and it replies `I DON'T KNOW`,
+suggests near matches for a mistyped ticker, and offers `LIST` to page
+through what it does have. The live server has no such limit: it analyses
+whatever you type.
 
 `.github/workflows/pages.yml` runs it on every push to `main`, on a weekday
 schedule after the US close, and on demand with a symbol list. To turn it on,

@@ -147,6 +147,7 @@ const state = {
   input: '',
   stream: null,
   keyFlash: 0,
+  listPage: 0,
   // catalog is set when the page is served statically: a published site
   // cannot run the model or reach the data providers from a browser, so it
   // ships the answers instead.
@@ -194,6 +195,15 @@ function submit(symbol) {
   const clean = symbol.toUpperCase().replace(/[^A-Z.\-]/g, '');
   if (!clean) return;
 
+  // LIST pages through the catalogue; it is a command, not a ticker.
+  if (clean === 'LIST' && state.catalog) {
+    state.input = '';
+    terminal.setInput('');
+    terminal.clear();
+    finish(report.listPage(state.catalog, state.listPage++));
+    return;
+  }
+
   state.mode = 'working';
   state.input = '';
   terminal.setInput('');
@@ -237,13 +247,7 @@ function submit(symbol) {
 async function runStatic(symbol, fan) {
   const known = state.catalog.symbols.some((s) => s.symbol === symbol);
   if (!known) {
-    finish([
-      '',
-      `\x02 ${symbol} IS NOT IN THIS PUBLISHED SET`,
-      '',
-      '\x01 THIS COPY SERVES PRECOMPUTED ANALYSES. AVAILABLE:',
-      ...report.symbolColumns(state.catalog.symbols),
-    ]);
+    finish(report.unknown(symbol, state.catalog));
     return;
   }
   const stages = state.catalog.stages?.length ? state.catalog.stages : ['loading published analysis'];

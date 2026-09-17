@@ -15,9 +15,13 @@ on:
   workflow_dispatch:
     inputs:
       symbols:
-        description: Comma-separated symbols to publish
+        description: Comma-separated symbols to publish, overriding the top-N default
         required: false
         default: ''
+      top:
+        description: Publish the N largest liquid US stocks
+        required: false
+        default: '500'
 
 permissions:
   contents: read
@@ -47,11 +51,18 @@ jobs:
 
       - name: Build the site
         env:
-          # Falls back to the built-in list when the input is empty.
           SYMBOLS: ${{ inputs.symbols }}
+          TOP: ${{ inputs.top || '500' }}
+        # An explicit symbol list wins; otherwise publish the N largest
+        # liquid US stocks. Five hundred analyses take roughly a quarter of
+        # an hour, so the step is given room.
+        timeout-minutes: 50
         run: |
-          go run ./cmd/mktpredict build-site -out dist \
-            ${SYMBOLS:+-symbols "$SYMBOLS"}
+          if [ -n "$SYMBOLS" ]; then
+            go run ./cmd/mktpredict build-site -out dist -symbols "$SYMBOLS" -workers 6 -timeout 45m
+          else
+            go run ./cmd/mktpredict build-site -out dist -top "$TOP" -workers 6 -timeout 45m
+          fi
           test -f dist/data/index.json
           echo "Published $(python3 -c 'import json;print(len(json.load(open("dist/data/index.json"))["symbols"]))') symbols"
 

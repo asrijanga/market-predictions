@@ -171,13 +171,22 @@ func Analyze(p *pack.Pack, o Options) (*Result, error) {
 	if !p.EarningsDate.IsZero() {
 		r.EarningsIdx = quant.TradingDays(p.AsOf, p.EarningsDate)
 	}
+	// The horizon has to cover every expiry a contract can be drawn from,
+	// which is a wider set than the expiries that can be fitted: a monthly
+	// expiry with liquid strikes but no solvable at-the-money volatility
+	// yields contracts while contributing no term to the fit. Letting the
+	// two diverge leaves contracts expiring past the end of the simulations
+	// built to that horizon.
 	horizon := 0
 	var terms []IVTerm
 	for _, e := range p.Expiries {
-		if e.Days > o.MaxExpiry || e.Days < 5 || e.ATMCallIV <= 0 {
+		if e.Days > o.MaxExpiry || e.Days < 5 {
 			continue
 		}
 		horizon = max(horizon, e.Days)
+		if e.ATMCallIV <= 0 {
+			continue
+		}
 		terms = append(terms, IVTerm{
 			Days: e.Days, IV: e.ATMCallIV,
 			HasEvent: r.EarningsIdx > 0 && r.EarningsIdx <= e.Days,
