@@ -125,7 +125,7 @@ func TestEarningsJumpWidensTheDistribution(t *testing.T) {
 	g := FitGARCH(syntheticGARCH(1000, 0.08, 0.88, 0.0002, 4))
 	base := SimConfig{Paths: 6000, Horizon: 40, StartVar: g.UncondVar, Seed: 21}
 	withJump := base
-	withJump.EarningsIdx, withJump.JumpStdev = 20, 0.06
+	withJump.EarningsDays, withJump.JumpStdev = []int{20}, 0.06
 	quiet := Simulate(g, g.Resid, base)
 	jumpy := Simulate(g, g.Resid, withJump)
 	if jumpy.RealizedVol(40) <= quiet.RealizedVol(40) {

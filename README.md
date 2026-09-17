@@ -7,7 +7,7 @@ trades on US stocks. It has three commands:
 | --- | --- |
 | `scan` | Ranks the largest liquid US stocks as call candidates from six months of price history. |
 | `pack SYMBOL` | Builds a one-year data pack for one stock: prices, trend statistics, the live option chain with implied volatility, earnings date, SEC filings and headlines. |
-| `analyze SYMBOL` | Runs the statistical model over that pack and reports when in the next three months to buy calls, with dated entry windows, triggers and expected outcomes. |
+| `analyze SYMBOL` | Runs the statistical model over that pack and answers whether the stock is bullish or bearish and why, where it is likely to be next quarter and next year, and when to buy calls. |
 
 Everything runs locally against public data endpoints (Nasdaq, Google News
 RSS, SEC EDGAR). There are no dependencies outside the Go standard library,
@@ -140,26 +140,71 @@ The pack contains:
 ## `analyze`
 
 ```sh
-mktpredict analyze AAPL                       # default: capped drift, 20k paths
-mktpredict analyze AAPL -drift risk-neutral   # strip the trend assumption out
-mktpredict analyze AAPL -paths 100000 -seed 7 -top 8
+mktpredict analyze AAPL                       # the short answer
+mktpredict analyze AAPL -detail               # plus every table behind it
+mktpredict analyze AAPL -drift risk-neutral   # strip the directional read out
+mktpredict analyze AAPL -paths 100000 -seed 7
 ```
 
-Flags: `-paths` (20000), `-seed` (1), `-drift`
-(`capped` | `trend` | `risk-neutral` | `zero`), `-drift-cap` (0.12),
-`-top` (5), `-min-oi` (250), `-max-spread` (0.20), plus every `pack` flag.
-Writes `packs/SYMBOL/report.md` and `report.json`.
+The default output is short. It says which way the stock leans and why, gives
+a direction for the next quarter and the next year, and names the one trade
+that follows:
+
+```
+# AAPL is STRONGLY BULLISH
+
+Composite signal score +0.76 on a scale of -1 to +1, from 10 measurements of
+trend, relative strength, volatility regime and option-market positioning.
+
+## Direction
+
+| Horizon | Date | Call | Probability up | Typical move | Average move | 80% range |
+|---|---|---|---|---|---|---|
+| Next quarter | 2026-12-15 | UP | 58% | +2.7% | +3.4% | 287 to 402 |
+| Next year | 2027-09-06 | UP | 65% | +10.7% | +14.7% | 258 to 520 |
+
+## Why strongly bullish
+- Fitted trend: +68%/yr over six months, R² 0.74. Scores +1.00, weight 17%.
+- Position against the 200-day average: +16.3% away from it. Scores +1.00, weight 15%.
+...
+## What argues against it
+- RSI(14): 62. Scores -0.40, moderately bearish, weight 5%.
+```
+
+`-detail` appends the evidence: the signal table, the volatility fit and its
+walk-forward scores, the implied-volatility surface, the simulated
+distribution, the contract screen, every ranked entry plan and the drift
+sensitivity grid.
+
+Flags: `-detail`, `-paths` (20000), `-seed` (1), `-drift`
+(`signal` | `capped` | `trend` | `risk-neutral` | `zero`), `-drift-cap`
+(0.12), `-outlook-days` (252), `-top` (5), `-min-oi` (250), `-max-spread`
+(0.20), plus every `pack` flag. Writes `packs/SYMBOL/report.md` and
+`report.json`.
 
 ### How the model works
 
-1. **Volatility.** A GARCH(1,1) model is fitted by maximum likelihood with
-   variance targeting on three years of daily log returns, giving the
-   current conditional volatility, the long-run level, and the speed a shock
-   decays. A walk-forward test scores its one-day-ahead forecasts against
-   EWMA, a rolling 20-day window and a constant variance under QLIKE loss,
-   so the report says plainly whether the model earns its place on this
-   stock.
-2. **The implied-volatility surface.** Listed implied variance is split by
+1. **Direction.** Ten observable signals are scored from -1 to +1 and
+   weighted into a composite: the fitted trend (weighted by its R², so a
+   noisy trend counts for less), position against the 200-day and 50-day
+   averages, excess return over the benchmark, one-month momentum, distance
+   from the 52-week high, RSI, the volatility regime's percentile, the
+   option skew and the put/call open-interest ratio. The composite sets the
+   stance, from strongly bearish to strongly bullish, and every signal is
+   reported with its reading, score and weight, so the verdict can be
+   argued with line by line.
+2. **Drift.** The composite maps to an expected annual return: the
+   risk-free rate plus the score's share of a 15-point equity risk premium.
+   That bounds it between roughly -11% and +19%/yr. None of the signals come
+   from the simulation, so setting the simulation's drift from them is not
+   circular, and a strong trend cannot extrapolate into a forecast that
+   flatters every long position.
+3. **Volatility.** GARCH(1,1) fitted by maximum likelihood with variance
+   targeting on three years of daily log returns. A walk-forward test scores
+   its one-day-ahead forecasts against EWMA, a rolling 20-day window and a
+   constant variance under QLIKE loss, so the report says plainly whether
+   conditional modelling earns its place on this stock.
+4. **The implied-volatility surface.** Listed implied variance is split by
    non-negative least squares into a diffusive part that accrues with time
    and a single bump for the earnings report:
    `IV(T)² · T = base² · T + jump² · 1{earnings before T}`. That separates
@@ -167,36 +212,36 @@ Writes `packs/SYMBOL/report.md` and `report.json`.
    and it yields the size of the volatility crush the moment the report
    passes, which is what decides whether to buy before or after it. A linear
    skew in log-moneyness prices strikes away from the money.
-3. **Paths.** A filtered historical simulation: GARCH supplies the variance
-   dynamics so volatility clusters, each shock is resampled from the stock's
-   own standardized residuals so its skew and fat tails survive, and the
-   earnings day carries an extra draw scaled to the market-implied move.
-4. **Plans.** Every combination of liquid contract, entry window and trigger
+5. **Paths.** A filtered historical simulation over a full year: GARCH
+   supplies the variance dynamics so volatility clusters, each shock is
+   resampled from the stock's own standardized residuals so its skew and fat
+   tails survive, and each earnings date in the window carries an extra draw
+   scaled to the market-implied move. The quarter and year forecasts are
+   read off the same paths, alongside a risk-neutral run that shows how much
+   of the probability comes from the directional read rather than from the
+   spread of outcomes.
+6. **Plans.** Every combination of liquid contract, entry window and trigger
    (enter now, wait for a 3/5/8% dip, wait for a 2/4% breakout) is priced
    across all paths. Entry happens on the first day inside the window where
    the trigger fires, at Black-Scholes value on the forecast surface plus
    half the current spread as slippage, and the option is held to expiry.
-   Each plan reports its fill probability, return if filled, median, win
-   rate and expected value.
-5. **Ranking.** Plans are ranked by expected log growth of capital at a 10%
+7. **Ranking.** Plans are ranked by expected log growth of capital at a 10%
    stake, not by expected return. Ranking by expected return picks the most
    convex lottery ticket on the board every time; ranking by expected value
    rewards triggers that never fire. The growth criterion does neither, and
    it also yields the Kelly stake for each plan.
-6. **Honesty about drift.** Expected returns on long calls are dominated by
-   the assumed drift, so the fitted trend is capped at 12%/yr by default,
-   every plan is re-simulated across a grid from -20% to +40%/yr, and each
-   one reports the break-even drift: the annual return the stock needs for
-   the plan to return nothing. That is the number to compare against your
-   own view.
+8. **Honesty about drift.** Expected returns on long calls are dominated by
+   the assumed drift, so every plan is re-simulated across a grid from -20%
+   to +40%/yr and reports its break-even drift: the annual return the stock
+   needs for the plan to return nothing.
 
 ## Runtime
 
 * A `pack` run is five to seven seconds cold (six concurrent fetches) and
-  under 50 ms cached. The model in `analyze` adds about 2.5 seconds for
-  20,000 paths: eight simulations (one for the chosen drift, seven for the
-  sensitivity grid) and roughly two thousand priced plans, spread across
-  CPUs.
+  under 50 ms cached. The model in `analyze` adds about three seconds for
+  20,000 paths: two year-long simulations for the forecast, seven shorter
+  ones for the drift sensitivity, and roughly two thousand priced plans,
+  spread across CPUs.
 * A cold `scan` over 150 names takes roughly 15 to 20 seconds and is bound by
   Nasdaq's per-request latency, not CPU. Raise `-concurrency` if the API
   tolerates it.
@@ -209,10 +254,14 @@ Writes `packs/SYMBOL/report.md` and `report.json`.
 ## Limitations
 
 The scan is a momentum-continuation heuristic, not a forecast of news,
-earnings or macro shocks. The model in `analyze` forecasts volatility and
-prices structures under an assumed drift; it does not forecast direction,
-and the drift it assumes is the weakest input by a wide margin, which is why
-the break-even drift is reported for every plan. The simulated surface is
+earnings or macro shocks. The direction call in `analyze` is a weighted
+score of price and positioning evidence: it is a considered reading of what
+is observable, not a forecast of what will be announced, and its weights are
+chosen rather than fitted. It sets the drift, drift dominates option
+returns, and so the break-even drift is reported for every plan and every
+plan is re-simulated across a grid of alternative assumptions. Forecast
+bands widen with the square root of time and are wide at one year by
+construction. The simulated surface is
 sticky in strike space and does not respond to the path, so a plan that only
 pays off through a volatility spike is not credited for one. Payoffs are
 European and held to expiry, ignoring early exercise and dividends. Earnings

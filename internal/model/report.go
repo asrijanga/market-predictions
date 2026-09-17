@@ -7,16 +7,167 @@ import (
 	"time"
 )
 
-// Render writes the quantitative verdict as Markdown.
+// Render writes the short answer: which way the stock leans, why, where it
+// is likely to be in three months and in a year, and the one trade that
+// follows. Everything that supports it is in RenderDetail.
 func Render(r *Result) string {
 	var b strings.Builder
 	w := func(format string, a ...any) { fmt.Fprintf(&b, format+"\n", a...) }
 	d := func(t time.Time) string { return t.Format("2006-01-02") }
 	pct := func(x float64) string { return fmt.Sprintf("%+.1f%%", 100*x) }
 
-	w("# %s call-timing model", r.Symbol)
+	w("# %s is %s", r.Symbol, strings.ToUpper(r.Stance))
 	w("")
-	w("As of %s, spot %.2f. %d simulated paths (seed %d), horizon %d trading days, drift mode %q, risk-free %.1f%%. Computed in %s.",
+	w("As of %s, spot %.2f. Composite signal score %+.2f on a scale of -1 to +1, from %d measurements of trend, relative strength, volatility regime and option-market positioning.",
+		d(r.AsOf), r.Spot, r.Score, len(r.Signals))
+
+	w("")
+	w("## Direction")
+	w("")
+	w("| Horizon | Date | Call | Probability up | Typical move | Average move | 80%% range |")
+	w("|---|---|---|---|---|---|---|")
+	for _, o := range r.Outlooks {
+		w("| %s | %s | **%s** | %.0f%% | %s | %s | %.0f to %.0f |",
+			o.Name, d(o.Date), strings.ToUpper(o.Direction), 100*o.ProbUp,
+			pct(o.MedianReturn), pct(o.MeanReturn), o.Low, o.High)
+	}
+	w("")
+	w("Typical is the median path and average is the mean. The mean is the larger of the two because prices compound: a stock can double but cannot fall more than all the way, so a few large gains pull the average above the outcome you should actually expect.")
+	w("")
+	if len(r.Outlooks) > 0 {
+		o := r.Outlooks[0]
+		w("The probability of being up is %.0f%% over the quarter against %.0f%% if %s earned only the risk-free rate. The gap is what the signals are adding; the rest is the shape of the distribution.",
+			100*o.ProbUp, 100*o.ProbUpBaseline, r.Symbol)
+	}
+
+	bull, bear := splitSignals(r.Signals)
+	w("")
+	w("## Why %s", r.Stance)
+	w("")
+	if len(bull) == 0 {
+		w("Nothing in the evidence points up.")
+	}
+	for _, s := range bull {
+		w("- **%s**: %s. %s", s.Name, s.Detail, contributionText(s))
+	}
+	w("")
+	w("## What argues against it")
+	w("")
+	if len(bear) == 0 {
+		w("Nothing in the evidence points the other way, which is itself a warning: a one-sided read is usually an incomplete one.")
+	}
+	for _, s := range bear {
+		w("- **%s**: %s. %s", s.Name, s.Detail, contributionText(s))
+	}
+
+	w("")
+	w("## If you are buying calls")
+	w("")
+	if len(r.Strategies) == 0 {
+		w("No entry plan clears the filters: nothing fills often enough to be worth naming.")
+	} else {
+		best := r.Strategies[0]
+		w("%s between %s and %s, then buy the %s %g call.",
+			capitalise(triggerText(best.Trigger, r.Spot)), d(best.Window.Start), d(best.Window.End),
+			d(best.Contract.Expiry), best.Contract.Strike)
+		w("")
+		w("- Fills on %.0f%% of paths; expected return %s when it does, with a %.0f%% chance of finishing above the entry cost.",
+			100*best.Stats.PTrade, pct(best.Stats.MeanReturn), 100*best.Stats.PProfit)
+		if now, ok := buyNowStats(r, best.Contract); ok {
+			delta := best.Stats.MeanReturn - now.MeanReturn
+			if delta >= 0 {
+				w("- Buying that contract today instead returns %s, so waiting for the trigger is worth %s.", pct(now.MeanReturn), pct(delta))
+			} else {
+				w("- Buying that contract today returns more on average, %s against %s, but wins less often, %.0f%% against %.0f%%. The plan is ranked on growth of capital, which prefers the higher win rate.",
+					pct(now.MeanReturn), pct(best.Stats.MeanReturn), 100*now.PProfit, 100*best.Stats.PProfit)
+			}
+		}
+		w("- It breaks even if %s compounds at %s, against the %+.1f%%/yr this forecast assumes.",
+			r.Symbol, breakEvenText(best.BreakEvenDrift), 100*r.AnnualDrift)
+		if r.EarningsIdx > 0 && r.IV.Fitted && r.IV.JumpStdev > 0 {
+			w("- Earnings on %s carry an implied move of ±%.1f%%, and about %.0f%% of at-the-money implied volatility disappears once the report is out.",
+				d(r.EarningsDate), 100*r.ImpliedMove, 100*r.IV.CrushPct(21))
+		}
+	}
+
+	w("")
+	w("## How much to trust this")
+	w("")
+	w("- The direction call is a weighted score of observable evidence. It sets the drift of the simulation, and drift is what dominates option returns, so treat the %+.1f%%/yr it implies as the assumption to argue with.", 100*r.AnnualDrift)
+	w("- The one-year range is wide by construction: %s. Volatility compounds with the square root of time and a year contains four earnings reports.",
+		yearRangeText(r))
+	w("- %d simulated paths, seed %d. Nothing here is investment advice.", r.Paths, r.Seed)
+	if len(r.Warnings) > 0 {
+		w("- Data warnings: %s.", strings.Join(r.Warnings, "; "))
+	}
+	w("")
+	w("Run with -detail for the volatility model, the implied-volatility surface, the contract screen and the full ranking.")
+	return b.String()
+}
+
+// splitSignals divides the evidence into what supports the call and what
+// works against it, keeping the strongest few of each.
+func splitSignals(sigs []Signal) (bull, bear []Signal) {
+	for _, s := range sigs {
+		if s.Contribution > 0 {
+			bull = append(bull, s)
+		} else if s.Contribution < 0 {
+			bear = append(bear, s)
+		}
+	}
+	return trim(bull, 5), trim(bear, 5)
+}
+
+func trim(s []Signal, n int) []Signal {
+	if len(s) > n {
+		return s[:n]
+	}
+	return s
+}
+
+func contributionText(s Signal) string {
+	strength := "weakly"
+	switch a := math.Abs(s.Score); {
+	case a >= 0.75:
+		strength = "strongly"
+	case a >= 0.35:
+		strength = "moderately"
+	}
+	side := "bullish"
+	if s.Contribution < 0 {
+		side = "bearish"
+	}
+	return fmt.Sprintf("Scores %+.2f, %s %s, weight %.0f%%.", s.Score, strength, side, 100*s.Weight)
+}
+
+func yearRangeText(r *Result) string {
+	for _, o := range r.Outlooks {
+		if o.Days > 200 {
+			return fmt.Sprintf("%.0f to %.0f covers eight cases in ten", o.Low, o.High)
+		}
+	}
+	return "no one-year horizon was simulated"
+}
+
+func capitalise(s string) string {
+	if s == "" {
+		return s
+	}
+	return strings.ToUpper(s[:1]) + s[1:]
+}
+
+// RenderDetail writes the model evidence behind the verdict: the volatility
+// fit, the implied-volatility surface, the simulated distribution, the
+// contract screen and every ranked plan.
+func RenderDetail(r *Result) string {
+	var b strings.Builder
+	w := func(format string, a ...any) { fmt.Fprintf(&b, format+"\n", a...) }
+	d := func(t time.Time) string { return t.Format("2006-01-02") }
+	pct := func(x float64) string { return fmt.Sprintf("%+.1f%%", 100*x) }
+
+	w("# %s model detail", r.Symbol)
+	w("")
+	w("As of %s, spot %.2f. %d simulated paths (seed %d), option horizon %d trading days, drift mode %q, risk-free %.1f%%. Computed in %s.",
 		d(r.AsOf), r.Spot, r.Paths, r.Seed, r.Horizon, r.DriftMode, 100*r.Rate, r.Elapsed)
 	if len(r.Warnings) > 0 {
 		w("")
@@ -24,28 +175,15 @@ func Render(r *Result) string {
 	}
 
 	w("")
-	w("## Verdict")
+	w("## Signal detail")
 	w("")
-	if len(r.Strategies) == 0 {
-		w("No entry plan clears the filters: nothing fills often enough to be worth naming.")
-	} else {
-		best := r.Strategies[0]
-		w("Best plan by expected log growth: **%s** between **%s and %s**, buying the **%s %g call**.",
-			triggerText(best.Trigger, r.Spot), d(best.Window.Start), d(best.Window.End), d(best.Contract.Expiry), best.Contract.Strike)
-		w("")
-		w("It fills on %.0f%% of paths. When it fills the expected return is %s, the median outcome is %s, and there is a %.0f%% chance of finishing above the entry cost. Buying the same contract today returns %s, so waiting for this trigger is worth %s.",
-			100*best.Stats.PTrade, pct(best.Stats.MeanReturn), pct(best.Stats.MedianReturn), 100*best.Stats.PProfit,
-			pct(buyNowReturn(r, best.Contract)), pct(best.Stats.MeanReturn-buyNowReturn(r, best.Contract)))
-		w("")
-		if best.Stats.MeanReturn <= 0 {
-			w("Note that the expected return is negative under the default drift of %+.1f%%/yr. The plan breaks even only if %s compounds at %s. Treat the ranking as relative value, not as a reason to be long.",
-				100*r.AnnualDrift, r.Symbol, breakEvenText(best.BreakEvenDrift))
-		} else {
-			w("The plan breaks even if %s compounds at %s, against the %+.1f%%/yr the simulation assumes and the %+.1f%%/yr its fitted six-month trend implies.",
-				r.Symbol, breakEvenText(best.BreakEvenDrift), 100*r.AnnualDrift, 100*r.TrendDrift)
-		}
+	w("| Signal | Reading | Score | Weight | Contribution |")
+	w("|---|---|---|---|---|")
+	for _, s := range r.Signals {
+		w("| %s | %s | %+.2f | %.0f%% | %+.3f |", s.Name, s.Detail, s.Score, 100*s.Weight, s.Contribution)
 	}
-
+	w("")
+	w("Composite %+.2f, which reads as %s and implies a drift of %+.1f%%/yr.", r.Score, r.Stance, 100*r.AnnualDrift)
 	w("")
 	w("## Volatility model")
 	w("")
@@ -185,13 +323,14 @@ func Render(r *Result) string {
 // n is the estimation sample size.
 func (g GARCH) n() int { return len(g.Resid) }
 
-func buyNowReturn(r *Result, c Contract) float64 {
+// buyNowStats finds how the same contract behaves when bought today.
+func buyNowStats(r *Result, c Contract) (Stats, bool) {
 	for _, s := range r.BuyNow {
 		if s.Contract.Strike == c.Strike && s.Contract.ExpiryIdx == c.ExpiryIdx {
-			return s.Stats.MeanReturn
+			return s.Stats, true
 		}
 	}
-	return 0
+	return Stats{}, false
 }
 
 // breakEvenText renders the drift a plan needs to return nothing, marking

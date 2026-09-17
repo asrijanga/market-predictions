@@ -97,9 +97,31 @@ func TestAnalyzeEndToEnd(t *testing.T) {
 		t.Fatalf("empty sections: contracts=%d buynow=%d volterm=%d dist=%d",
 			len(r.Contracts), len(r.BuyNow), len(r.VolTerm), len(r.Dist))
 	}
-	// The capped drift must bind: the synthetic series trends far harder.
-	if math.Abs(r.AnnualDrift) > o.DriftCap+1e-9 {
-		t.Errorf("drift %.3f exceeds the cap %.3f", r.AnnualDrift, o.DriftCap)
+	// The signal drift must stay inside the risk premium band either side
+	// of the risk-free rate, however hard the synthetic series trends.
+	if r.AnnualDrift > o.Rate+o.PremiumSpan+1e-9 || r.AnnualDrift < o.Rate-o.PremiumSpan-1e-9 {
+		t.Errorf("drift %.3f outside the band %.3f ± %.3f", r.AnnualDrift, o.Rate, o.PremiumSpan)
+	}
+	if r.Stance == "" || len(r.Signals) < 8 {
+		t.Errorf("stance %q from %d signals", r.Stance, len(r.Signals))
+	}
+	if len(r.Outlooks) != 2 || r.Outlooks[0].Days != 63 || r.Outlooks[1].Days != 252 {
+		t.Fatalf("outlooks = %+v", r.Outlooks)
+	}
+	for _, out := range r.Outlooks {
+		if out.Direction != "up" && out.Direction != "down" {
+			t.Errorf("no direction for %s", out.Name)
+		}
+		if !(out.Low < out.Median && out.Median < out.High) {
+			t.Errorf("outlook band out of order: %+v", out)
+		}
+		if out.ProbUp <= 0 || out.ProbUp >= 1 {
+			t.Errorf("implausible P(up) %v", out.ProbUp)
+		}
+	}
+	// A year of paths must be wider than a quarter of them.
+	if q, y := r.Outlooks[0], r.Outlooks[1]; (y.High - y.Low) <= (q.High - q.Low) {
+		t.Error("the one-year band should be wider than the one-quarter band")
 	}
 	// Distribution should widen with time and stay ordered.
 	for _, row := range r.Dist {
@@ -166,7 +188,7 @@ func TestAnalyzeRiskNeutralDriftIsWorseThanTrend(t *testing.T) {
 	}
 }
 
-func TestRenderIncludesEverySection(t *testing.T) {
+func TestRenderSummaryAnswersTheQuestion(t *testing.T) {
 	p := testPack(t)
 	o := Defaults()
 	o.Paths = 2000
@@ -176,15 +198,47 @@ func TestRenderIncludesEverySection(t *testing.T) {
 	}
 	md := Render(r)
 	for _, want := range []string{
-		"# TEST call-timing model", "## Verdict", "## Volatility model", "GARCH(1,1)",
+		"# TEST is ", "## Direction", "Next quarter", "Next year",
+		"## Why ", "## What argues against it", "## If you are buying calls",
+		"## How much to trust this",
+	} {
+		if !strings.Contains(md, want) {
+			t.Errorf("summary is missing %q", want)
+		}
+	}
+	// The summary is the short answer; the evidence tables belong in detail.
+	for _, unwanted := range []string{"QLIKE", "Drift sensitivity", "Contract screen"} {
+		if strings.Contains(md, unwanted) {
+			t.Errorf("summary should not carry %q", unwanted)
+		}
+	}
+	assertNoFormatErrors(t, md)
+}
+
+func TestRenderDetailKeepsTheEvidence(t *testing.T) {
+	p := testPack(t)
+	o := Defaults()
+	o.Paths = 2000
+	r, err := Analyze(p, o)
+	if err != nil {
+		t.Fatal(err)
+	}
+	md := RenderDetail(r)
+	for _, want := range []string{
+		"# TEST model detail", "## Signal detail", "## Volatility model", "GARCH(1,1)",
 		"## Implied volatility surface", "## Simulated price distribution",
 		"## Contract screen", "## Ranked entry windows", "### Drift sensitivity",
 		"## Method and limitations",
 	} {
 		if !strings.Contains(md, want) {
-			t.Errorf("report is missing %q", want)
+			t.Errorf("detail is missing %q", want)
 		}
 	}
+	assertNoFormatErrors(t, md)
+}
+
+func assertNoFormatErrors(t *testing.T, md string) {
+	t.Helper()
 	if strings.Contains(md, "MISSING") || strings.Contains(md, "%!") {
 		t.Error("report contains a formatting error")
 	}

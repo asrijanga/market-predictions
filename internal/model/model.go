@@ -16,6 +16,10 @@ const (
 	// annual return. A stock's six-month trend is a weak predictor of its
 	// next three months, and an uncapped trend makes every long call look
 	// like a winner, which is how option models lie to their owners.
+	// DriftSignal is the default: an expected return implied by the
+	// composite of the directional signals, bounded by an equity risk
+	// premium either side of the risk-free rate.
+	DriftSignal      = "signal"
 	DriftCapped      = "capped"
 	DriftTrend       = "trend"        // the shrunk fitted trend, uncapped
 	DriftRiskNeutral = "risk-neutral" // the stock earns the risk-free rate
@@ -28,26 +32,29 @@ var DriftGrid = []float64{-0.20, -0.10, 0, 0.05, 0.10, 0.20, 0.40}
 
 // Options configures the analysis.
 type Options struct {
-	Paths     int
-	Seed      uint64
-	Rate      float64
-	MinOI     int64
-	MaxSpread float64
-	MinDelta  float64
-	MaxDelta  float64
-	DriftMode string
-	DriftCap  float64 // maximum annualised simple return under DriftCapped
-	TopN      int
-	MinPTrade float64
-	MaxExpiry int // furthest expiry to consider, in trading days
-	EntryDays int // how far out an entry window may start, in trading days
+	Paths       int
+	Seed        uint64
+	Rate        float64
+	MinOI       int64
+	MaxSpread   float64
+	MinDelta    float64
+	MaxDelta    float64
+	DriftMode   string
+	DriftCap    float64 // maximum annualised simple return under DriftCapped
+	PremiumSpan float64 // how far the signal score may move drift from the risk-free rate
+	OutlookDays int     // horizon of the directional forecast, in trading days
+	TopN        int
+	MinPTrade   float64
+	MaxExpiry   int // furthest expiry to consider, in trading days
+	EntryDays   int // how far out an entry window may start, in trading days
 }
 
 // Defaults returns the standard settings.
 func Defaults() Options {
 	return Options{
 		Paths: 20000, Seed: 1, Rate: 0.04, MinOI: 250, MaxSpread: 0.20,
-		MinDelta: 0.25, MaxDelta: 0.70, DriftMode: DriftCapped, DriftCap: 0.12,
+		MinDelta: 0.25, MaxDelta: 0.70, DriftMode: DriftSignal, DriftCap: 0.12,
+		PremiumSpan: 0.15, OutlookDays: 252,
 		TopN: 5, MinPTrade: 0.25, MaxExpiry: 110, EntryDays: 63,
 	}
 }
@@ -90,9 +97,14 @@ type Result struct {
 	AnnualDrift float64   `json:"annual_drift"`
 	TrendDrift  float64   `json:"trend_drift_annual"` // the uncapped fitted trend, for reference
 	DriftGrid   []float64 `json:"drift_grid"`
-	Horizon     int       `json:"horizon_days"`
-	Rate        float64   `json:"rate"`
-	Elapsed     string    `json:"elapsed"`
+
+	Stance   string    `json:"stance"`
+	Score    float64   `json:"score"`
+	Signals  []Signal  `json:"signals"`
+	Outlooks []Outlook `json:"outlooks"`
+	Horizon  int       `json:"horizon_days"`
+	Rate     float64   `json:"rate"`
+	Elapsed  string    `json:"elapsed"`
 
 	GARCH        GARCH      `json:"garch"`
 	GARCHVol     float64    `json:"garch_vol_now"` // annualised one-step forecast
@@ -174,8 +186,13 @@ func Analyze(p *pack.Pack, o Options) (*Result, error) {
 		r.Warnings = append(r.Warnings, "no earnings date available; timing ignores event risk")
 	}
 
-	// 3. Drift. The trend drift is the pack's benchmark-shrunk trend, read
-	// back out of the projection it produced, and capped by default.
+	// 3. Direction. The signals are scored first, because the composite is
+	// what sets the drift the simulation runs at.
+	r.Signals, r.Score = Signals(p, ivm)
+	r.Stance = Stance(r.Score)
+
+	// 4. Drift. The trend drift is the pack's benchmark-shrunk trend, read
+	// back out of the projection it produced.
 	trend := 0.0
 	if p.Trend.HorizonDays > 0 {
 		trend = math.Log1p(p.Trend.ExpectedReturn) / float64(p.Trend.HorizonDays)
@@ -190,34 +207,49 @@ func Analyze(p *pack.Pack, o Options) (*Result, error) {
 		drift = rnDrift
 	case DriftTrend:
 		drift = trend
-	default: // DriftCapped
+	case DriftCapped:
 		hi := math.Log1p(o.DriftCap) / quant.TradingDaysPerYear
 		lo := math.Log1p(-o.DriftCap) / quant.TradingDaysPerYear
 		drift = math.Max(lo, math.Min(hi, trend))
+	default: // DriftSignal
+		drift = math.Log1p(SignalDrift(r.Score, o.Rate, o.PremiumSpan)) / quant.TradingDaysPerYear
 	}
 	r.DailyDrift = drift
 	r.AnnualDrift = math.Expm1(drift * quant.TradingDaysPerYear)
 	r.DriftGrid = DriftGrid
 
-	// 4. Simulate, under the chosen drift and under a risk-neutral drift.
+	// 5. Simulate. One long run covers both the option plans and the
+	// directional forecast; earnings recur roughly quarterly over a year.
+	simHorizon := max(horizon, o.OutlookDays)
 	cfg := SimConfig{
-		Paths: o.Paths, Horizon: horizon, DailyDrift: drift, StartVar: nextVar,
-		EarningsIdx: r.EarningsIdx, JumpStdev: ivm.JumpStdev, Seed: o.Seed,
-	}
-	if cfg.EarningsIdx > horizon {
-		cfg.EarningsIdx = 0
+		Paths: o.Paths, Horizon: simHorizon, DailyDrift: drift, StartVar: nextVar,
+		EarningsDays: earningsSchedule(r.EarningsIdx, simHorizon), JumpStdev: ivm.JumpStdev, Seed: o.Seed,
 	}
 	sim := Simulate(g, g.Resid, cfg)
-	// One simulation per point on the drift grid, so every plan can be
-	// re-scored under an assumption the reader chooses instead of ours.
+
+	rnCfg := cfg
+	rnCfg.DailyDrift = o.Rate/quant.TradingDaysPerYear - 0.5*g.UncondVar
+	rnSim := Simulate(g, g.Resid, rnCfg)
+
+	// The drift grid only has to reach the furthest expiry, since it exists
+	// to re-score option plans rather than the forecast.
 	gridSims := make([]*Sim, len(DriftGrid))
 	for i, annual := range DriftGrid {
 		gcfg := cfg
+		gcfg.Horizon = horizon
+		gcfg.EarningsDays = earningsSchedule(r.EarningsIdx, horizon)
 		gcfg.DailyDrift = math.Log1p(annual) / quant.TradingDaysPerYear
 		gridSims[i] = Simulate(g, g.Resid, gcfg)
 	}
 
-	// 5. Volatility term structure and the simulated distribution.
+	// 6. Directional forecast.
+	quarter := min(63, simHorizon)
+	r.Outlooks = append(r.Outlooks, BuildOutlook("Next quarter", quarter, p.AsOf, p.Price, sim, rnSim))
+	if o.OutlookDays > quarter {
+		r.Outlooks = append(r.Outlooks, BuildOutlook("Next year", min(o.OutlookDays, simHorizon), p.AsOf, p.Price, sim, rnSim))
+	}
+
+	// 7. Volatility term structure and the option-chain distribution.
 	for _, e := range p.Expiries {
 		// Expiries inside a week price a pin, not a view; they distort the
 		// term structure and are left out.
@@ -244,13 +276,13 @@ func Analyze(p *pack.Pack, o Options) (*Result, error) {
 		})
 	}
 
-	// 6. Candidate contracts.
+	// 8. Candidate contracts.
 	r.Contracts = selectContracts(p, r, ivm, g, nextVar, o)
 	if len(r.Contracts) == 0 {
 		return nil, fmt.Errorf("model: no liquid call contracts for %s within the filters", p.Symbol)
 	}
 
-	// 7. Buy-today baseline and the ranked window search.
+	// 9. Buy-today baseline and the ranked window search.
 	today := Window{StartIdx: 0, EndIdx: 0, Start: p.AsOf, End: p.AsOf, Label: "buy today"}
 	immediate := Trigger{Kind: TriggerImmediate}
 	for _, c := range r.Contracts {
@@ -297,6 +329,20 @@ func addSensitivity(s *Strategy, sims []*Sim, ivm IVModel, spot float64, horizon
 	if len(s.DriftCurve) > 0 && s.DriftCurve[0] > 0 {
 		s.BreakEvenDrift = BreakEven(math.Inf(-1))
 	}
+}
+
+// earningsSchedule returns the day indices carrying an earnings jump: the
+// next report, then one about every quarter after it for as long as the
+// simulation runs.
+func earningsSchedule(next, horizon int) []int {
+	if next <= 0 {
+		return nil
+	}
+	var out []int
+	for d := next; d <= horizon; d += 63 {
+		out = append(out, d)
+	}
+	return out
 }
 
 // forecastVol is the model's expected volatility over an option's life: the

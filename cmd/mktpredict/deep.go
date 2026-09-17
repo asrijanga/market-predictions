@@ -39,9 +39,11 @@ type deepConfig struct {
 	driftMode    string
 	driftCap     float64
 	topN         int
+	outlookDays  int
 	minOI        int64
 	maxSpread    float64
 	printPack    bool
+	detail       bool
 	verbose      bool
 }
 
@@ -74,11 +76,13 @@ func packCommand(ctx context.Context, args []string, out io.Writer, analyze bool
 	if analyze {
 		fs.IntVar(&cfg.paths, "paths", 20000, "simulated price paths")
 		fs.Uint64Var(&cfg.seed, "seed", 1, "random seed, for reproducible runs")
-		fs.StringVar(&cfg.driftMode, "drift", model.DriftCapped, "capped | trend | risk-neutral | zero: the expected drift of the simulation")
+		fs.StringVar(&cfg.driftMode, "drift", model.DriftSignal, "signal | capped | trend | risk-neutral | zero: what sets the expected drift of the simulation")
 		fs.Float64Var(&cfg.driftCap, "drift-cap", 0.12, "cap on the annualised drift under -drift capped")
 		fs.IntVar(&cfg.topN, "top", 5, "entry windows to report")
 		fs.Int64Var(&cfg.minOI, "min-oi", 250, "minimum open interest for a contract to be considered")
 		fs.Float64Var(&cfg.maxSpread, "max-spread", 0.20, "maximum bid-ask spread as a fraction of mid")
+		fs.BoolVar(&cfg.detail, "detail", false, "append the full model evidence: volatility fit, surface, distribution, contract screen and every ranked plan")
+		fs.IntVar(&cfg.outlookDays, "outlook-days", 252, "horizon of the directional forecast in trading days (252 ≈ 1 year)")
 	}
 	// Accept the symbol before or after the flags: "pack AAPL -v" reads
 	// more naturally than "pack -v AAPL", which is what flag alone allows.
@@ -151,15 +155,21 @@ func packCommand(ctx context.Context, args []string, out io.Writer, analyze bool
 	if cfg.driftCap > 0 {
 		opts.DriftCap = cfg.driftCap
 	}
+	if cfg.outlookDays > 0 {
+		opts.OutlookDays = cfg.outlookDays
+	}
 	res, err := model.Analyze(p, opts)
 	if err != nil {
 		return err
 	}
 	if cfg.verbose {
-		log.Printf("model: GARCH persistence %.3f, base vol %.0f%%, implied earnings move %.1f%%, %d contracts, %s",
-			res.GARCH.Persistence(), 100*res.IV.BaseVol, 100*res.ImpliedMove, len(res.Contracts), res.Elapsed)
+		log.Printf("model: score %+.2f (%s), GARCH persistence %.3f, base vol %.0f%%, implied earnings move %.1f%%, %d contracts, %s",
+			res.Score, res.Stance, res.GARCH.Persistence(), 100*res.IV.BaseVol, 100*res.ImpliedMove, len(res.Contracts), res.Elapsed)
 	}
 	reportMD := model.Render(res)
+	if cfg.detail {
+		reportMD += "\n---\n\n" + model.RenderDetail(res)
+	}
 	if err := writeReport(dir, res, reportMD); err != nil {
 		return err
 	}
