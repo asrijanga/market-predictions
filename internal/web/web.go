@@ -306,6 +306,11 @@ func modelWarnings(all []string) []string {
 		if strings.HasPrefix(w, "news:") || strings.HasPrefix(w, "filings:") {
 			continue
 		}
+		// The screen says this in its own words under CALL PLAN, so
+		// repeating it as a note would just spend two more lines.
+		if strings.HasPrefix(w, "no call contracts clear") {
+			continue
+		}
 		out = append(out, w)
 	}
 	return out
