@@ -1,11 +1,19 @@
 # market-predictions
 
-`mktpredict` is a Go command-line tool that pulls six months of public daily
-price history for the largest, most liquid US stocks, measures each name's
-trend, and projects it forward to a chosen options expiry. It ranks the
-universe by how attractive a long call looks and prints the top picks.
+`mktpredict` is a Go command-line tool for finding and timing call-option
+trades on US stocks. It has three commands:
 
-It has no dependencies outside the Go standard library and needs no API key.
+| Command | What it does |
+| --- | --- |
+| `scan` | Ranks the largest liquid US stocks as call candidates from six months of price history. |
+| `pack SYMBOL` | Builds a one-year data pack for one stock: prices, trend statistics, the live option chain with implied volatility, earnings date, SEC filings and headlines. |
+| `analyze SYMBOL` | Builds the pack and asks Claude when in the next three months to buy calls, writing a report with dated entry windows. |
+
+A Claude Code skill, `/call-timing SYMBOL`, runs the same pack through three
+parallel analyst subagents instead of a single model call.
+
+The market data comes from public endpoints (Nasdaq, Google News RSS, SEC
+EDGAR) and needs no API key. Only `analyze` talks to Claude.
 
 ## Install
 
@@ -19,20 +27,44 @@ or from a checkout:
 go build -o mktpredict ./cmd/mktpredict
 ```
 
-## Usage
+## Quick start
 
 ```sh
-# Top 15 call candidates for the November 2026 monthly expiry (third Friday)
-mktpredict -expiry 2026-11
+# 1. Find candidates: top 15 call setups for the November 2026 monthly expiry
+mktpredict scan -expiry 2026-11
 
-# Default: three-month horizon, 150-stock universe, 15 picks
-mktpredict
+# 2. Deep-dive one of them: data pack only (no model call)
+export SEC_CONTACT_EMAIL=you@example.com   # the SEC requires a contact in the User-Agent
+mktpredict pack AAPL
 
-# Analyse specific names, machine-readable
-mktpredict -symbols AAPL,MSFT,NVDA -json
+# 3. Ask Claude when to buy
+mktpredict analyze AAPL
+```
 
-# Bigger universe, more picks, progress logging
-mktpredict -top 300 -n 30 -v
+## Authenticating to Claude
+
+`analyze` picks a backend automatically (`-backend auto`), or you can force one:
+
+| You have | Backend | How it authenticates |
+| --- | --- | --- |
+| A Claude subscription (Pro/Max) | `claude-code` | Shells out to the `claude` CLI in headless mode (`claude -p`). Install Claude Code, run `claude` once and log in; the CLI reuses that login. No API key involved. |
+| An Anthropic API key | `api` | Set `ANTHROPIC_API_KEY`. Calls the Messages API with the official Go SDK, billed per token. |
+| An `ant auth login` profile | `api` | The SDK reads the profile automatically when no key is set. |
+
+Auto-detection order: API key or token in the environment, then an `ant`
+profile on disk, then a `claude` binary on `PATH`. Override with `-backend`
+and `-model` (API default `claude-opus-5`, CLI default `opus`).
+
+Both backends send the same system prompt and enforce the same JSON schema,
+so reports are comparable across them.
+
+## `scan`
+
+```sh
+mktpredict scan -expiry 2026-11          # November monthly expiry
+mktpredict scan                          # three-month horizon, 150 stocks, 15 picks
+mktpredict scan -symbols AAPL,MSFT -json # specific names, machine-readable
+mktpredict scan -top 300 -n 30 -v
 ```
 
 Flags:
@@ -52,7 +84,7 @@ Flags:
 | `-no-cache`, `-cache-dir` | | Control the on-disk response cache. |
 | `-v` | | Log progress and skipped symbols to stderr. |
 
-## Output
+### Output
 
 ```
 As of 2026-09-16 | lookback 126 trading days | horizon 47 trading days to Fri 2026-11-20
@@ -71,7 +103,7 @@ Benchmark SPY: trend +29.8%/yr (R² 0.71), vol 13.8%/yr | universe 150, analyzed
 * **Strike**: first listed strike at or above spot, using standard US increments.
 * **Flags**: `below-50d`, `extended` (RSI > 70), `overbought` (RSI > 80), `deep-drawdown`, `recent-selloff`, `extreme-vol`, `volume-surge`.
 
-## How it works
+### How the scan works
 
 1. **Universe.** One request to Nasdaq's stock screener returns every US
    listing. Warrants, units, preferreds, SPACs and other non-common
@@ -97,9 +129,53 @@ Benchmark SPY: trend +29.8%/yr (R² 0.71), vol 13.8%/yr | universe 150, analyzed
    overbought RSI, deep drawdowns, a sharp one-month selloff or extreme
    volatility.
 
+## `pack` and `analyze`
+
+```sh
+mktpredict pack AAPL -print            # write packs/AAPL/{pack.json,pack.md} and print the brief
+mktpredict analyze AAPL -v             # also write packs/AAPL/{report.json,report.md}
+mktpredict analyze NVDA -backend api -model claude-opus-5
+mktpredict analyze NVDA -backend claude-code -model opus
+```
+
+Flags: `-lookback` (252 trading days), `-trend` (126, the momentum-model
+window), `-horizon` (63), `-news-days` (90), `-max-headlines` (60), `-rate`
+(risk-free rate for pricing, 0.04), `-sec-contact` (or `SEC_CONTACT_EMAIL`),
+`-no-news`, `-out` (default `packs`), `-timeout` (10m), plus the cache flags.
+
+The pack contains:
+
+* **Price context**: 1-year and 6-month returns versus the benchmark, 52-week
+  range, 200/50/20-day moving-average position, fitted trend and R², RSI,
+  drawdown, 20-day and 1-year realised volatility with a percentile rank, and
+  the scan's momentum projection.
+* **Calendar**: estimated earnings date, FOMC decision days, monthly expiries.
+* **Option chain**: for every listed expiry, the ATM call and put implied
+  volatility (Black-Scholes from the bid/ask mid), straddle-implied move and
+  put/call open interest; for monthly expiries, each strike from ATM to about
+  10% out of the money with mid, spread, IV, delta, breakeven and open interest.
+* **Weekly closes** for 52 weeks and the last 15 daily sessions.
+* **SEC filings** (8-K, 10-Q, 10-K) for the past year and up to 60 headlines
+  from the past 90 days.
+
+`analyze` sends the rendered brief to Claude with a fixed system prompt and a
+JSON schema and writes the structured verdict: stance, thesis, up to three
+entry windows (dates, trigger, expiry, strike, rationale, invalidation), an
+avoid list, risks and what would change the view.
+
+## Claude Code skill
+
+`/call-timing AAPL` inside Claude Code builds the pack with the CLI, fans out
+three subagents (technicals, catalysts, options), and writes
+`packs/AAPL/report.md` with the same sections. See
+`.claude/skills/call-timing/SKILL.md`.
+
 ## Runtime
 
-* A cold run over 150 names takes roughly 15 to 20 seconds and is bound by
+* A `pack` run is five to seven seconds cold (six concurrent fetches) and
+  under 50 ms cached. The model call in `analyze` typically takes one to
+  three minutes.
+* A cold `scan` over 150 names takes roughly 15 to 20 seconds and is bound by
   Nasdaq's per-request latency, not CPU. Raise `-concurrency` if the API
   tolerates it.
 * Responses are cached under the user cache directory keyed by request date,
@@ -110,10 +186,13 @@ Benchmark SPY: trend +29.8%/yr (R² 0.71), vol 13.8%/yr | universe 150, analyzed
 
 ## Limitations
 
-This is a momentum-continuation heuristic, not a forecast of news, earnings
-or macro shocks. It knows nothing about implied volatility, so a high
-P(up) does not mean the call is cheap. Trading-day counts ignore exchange
-holidays. Nothing here is investment advice.
+The scan is a momentum-continuation heuristic, not a forecast of news,
+earnings or macro shocks. The analysis step is a language model reading a
+brief: it makes the catalysts, volatility setup and timing logic explicit and
+auditable, but it does not predict prices. Earnings dates are Nasdaq/Zacks
+estimates until confirmed. FOMC dates are a static table through 2027.
+Trading-day counts ignore exchange holidays. Nothing here is investment
+advice.
 
 ## Development
 
