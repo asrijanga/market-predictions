@@ -2,7 +2,7 @@
 //
 //	mktpredict scan [flags]           rank a universe of stocks as call candidates
 //	mktpredict pack SYMBOL [flags]    build a one-year data pack for one stock
-//	mktpredict analyze SYMBOL [flags] build the pack and have Claude time the entry
+//	mktpredict analyze SYMBOL [flags] build the pack and model the entry timing
 //
 // Run any subcommand with -h for its flags.
 package main
@@ -36,7 +36,7 @@ const usage = `usage: mktpredict <command> [flags]
 Commands:
   scan      rank the largest liquid US stocks as call candidates (default)
   pack      build a one-year data pack (prices, options, news, filings) for one symbol
-  analyze   build the pack and ask Claude when to buy calls in the next three months
+  analyze   model when to buy calls on one symbol over the next three months
 
 Run "mktpredict <command> -h" for flags.
 `

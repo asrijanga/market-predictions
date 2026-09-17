@@ -46,7 +46,8 @@ type deepConfig struct {
 }
 
 // packCommand implements both `pack` and `analyze`; analyze additionally
-// sends the pack to Claude and writes report.md / report.json.
+// runs the statistical model over the pack and writes report.md and
+// report.json.
 func packCommand(ctx context.Context, args []string, out io.Writer, analyze bool) error {
 	name := "pack"
 	if analyze {
