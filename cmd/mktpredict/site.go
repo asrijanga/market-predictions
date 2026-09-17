@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"flag"
 	"fmt"
 	"io"
@@ -17,6 +18,7 @@ import (
 	"github.com/asrijanga/market-predictions/internal/model"
 	"github.com/asrijanga/market-predictions/internal/nasdaq"
 	"github.com/asrijanga/market-predictions/internal/pack"
+	"github.com/asrijanga/market-predictions/internal/store"
 	"github.com/asrijanga/market-predictions/internal/universe"
 	"github.com/asrijanga/market-predictions/internal/web"
 )
@@ -27,6 +29,17 @@ var defaultSiteSymbols = []string{
 	"AAPL", "MSFT", "NVDA", "AMZN", "GOOGL", "META", "TSLA", "AVGO",
 	"AMD", "NFLX", "JPM", "V", "WMT", "XOM", "LLY", "COST",
 	"ORCL", "CRM", "INTC", "MU", "PLTR", "UBER", "DIS", "BA",
+}
+
+// defaultStages names the pipeline for a build where every symbol came from
+// the database and no stage callbacks fired.
+var defaultStages = []string{
+	"fetching one year of prices and options",
+	"fitting GARCH(1,1) volatility model",
+	"decomposing the implied volatility surface",
+	"scoring directional signals",
+	"simulating price paths",
+	"ranking entry plans",
 }
 
 // siteIndex is what the front end reads to discover what has been
@@ -63,6 +76,8 @@ func buildSiteCommand(ctx context.Context, args []string, out io.Writer) error {
 	workers := fs.Int("workers", 4, "symbols to analyse at once")
 	cacheDir := fs.String("cache-dir", defaultCacheDir(), "directory for cached API responses")
 	noCache := fs.Bool("no-cache", false, "bypass the on-disk response cache")
+	dbPath := fs.String("db", defaultDBPath(), "DuckDB file holding computed analyses; empty disables it")
+	refresh := fs.Bool("refresh", false, "recompute every symbol even when the database already has today's answer")
 	timeout := fs.Duration("timeout", 20*time.Minute, "overall timeout")
 	if err := fs.Parse(args); err != nil {
 		return err
@@ -70,14 +85,14 @@ func buildSiteCommand(ctx context.Context, args []string, out io.Writer) error {
 	ctx, cancel := context.WithTimeout(ctx, *timeout)
 	defer cancel()
 
-	var store *cache.Cache
+	var responses *cache.Cache
 	if !*noCache {
 		var err error
-		if store, err = cache.New(*cacheDir); err != nil {
+		if responses, err = cache.New(*cacheDir); err != nil {
 			return err
 		}
 	}
-	nq := nasdaq.NewClient(8, store)
+	nq := nasdaq.NewClient(8, responses)
 	now := marketNow()
 
 	symbols, err := siteSymbols(ctx, nq, *symbolList, *top, now)
@@ -96,6 +111,12 @@ func buildSiteCommand(ctx context.Context, args []string, out io.Writer) error {
 	// model, so the site build skips them and stays fast.
 	sources := pack.Sources{Nasdaq: nq}
 
+	db, err := openStore(*dbPath)
+	if err != nil {
+		return err
+	}
+	defer db.Close()
+
 	var (
 		mu      sync.Mutex
 		entries []siteEntry
@@ -111,22 +132,51 @@ func buildSiteCommand(ctx context.Context, args []string, out io.Writer) error {
 			defer wg.Done()
 			defer func() { <-sem }()
 
-			var seen []string
-			view, err := analyseForSite(ctx, sources, symbol, *benchmark, *paths, *rate, now, func(stage string) {
-				seen = append(seen, stage)
-			})
+			key := store.Key{
+				Symbol: symbol, AsOf: now, Paths: *paths,
+				Seed: model.Defaults().Seed, ModelVersion: model.Version,
+			}
+			var (
+				body   []byte
+				view   *web.View
+				seen   []string
+				cached bool
+			)
+			if !*refresh {
+				if stored, ok, err := db.Get(ctx, key); err != nil {
+					log.Printf("cache read %s: %v", symbol, err)
+				} else if ok {
+					var v web.View
+					if err := json.Unmarshal(stored, &v); err == nil {
+						body, view, cached = stored, &v, true
+					}
+				}
+			}
+			started := time.Now()
+			if view == nil {
+				var err error
+				view, err = analyseForSite(ctx, sources, symbol, *benchmark, *paths, *rate, now, func(stage string) {
+					seen = append(seen, stage)
+				})
+				if err != nil {
+					mu.Lock()
+					log.Printf("skip %s: %v", symbol, err)
+					failed = append(failed, symbol)
+					mu.Unlock()
+					return
+				}
+				if body, err = json.Marshal(view); err != nil {
+					mu.Lock()
+					failed = append(failed, symbol)
+					mu.Unlock()
+					return
+				}
+				if err := db.Put(ctx, key, body, time.Since(started)); err != nil {
+					log.Printf("cache write %s: %v", symbol, err)
+				}
+			}
 			mu.Lock()
 			defer mu.Unlock()
-			if err != nil {
-				log.Printf("skip %s: %v", symbol, err)
-				failed = append(failed, symbol)
-				return
-			}
-			body, err := json.Marshal(view)
-			if err != nil {
-				failed = append(failed, symbol)
-				return
-			}
 			if err := os.WriteFile(filepath.Join(dataDir, symbol+".json"), body, 0o644); err != nil {
 				log.Printf("write %s: %v", symbol, err)
 				failed = append(failed, symbol)
@@ -136,7 +186,11 @@ func buildSiteCommand(ctx context.Context, args []string, out io.Writer) error {
 			if len(seen) > len(stages) {
 				stages = seen
 			}
-			log.Printf("%-6s %-18s %+.2f", symbol, view.Stance, view.Score)
+			from := "computed"
+			if cached {
+				from = "cached"
+			}
+			log.Printf("%-6s %-18s %+.2f  %s", symbol, view.Stance, view.Score, from)
 		}(symbol)
 	}
 	wg.Wait()
@@ -148,6 +202,9 @@ func buildSiteCommand(ctx context.Context, args []string, out io.Writer) error {
 	}
 	sortEntries(entries)
 
+	if len(stages) == 0 {
+		stages = defaultStages
+	}
 	index := siteIndex{
 		GeneratedAt: time.Now().UTC().Format(time.RFC3339),
 		AsOf:        now.Format(time.DateOnly),
@@ -225,4 +282,72 @@ func sortEntries(entries []siteEntry) {
 			entries[j], entries[j-1] = entries[j-1], entries[j]
 		}
 	}
+}
+
+// openStore opens the analysis database, or returns nil when caching is
+// switched off. A nil store is safe to use.
+func openStore(path string) (*store.Store, error) {
+	if path == "" {
+		return nil, nil
+	}
+	if dir := filepath.Dir(path); dir != "" {
+		if err := os.MkdirAll(dir, 0o755); err != nil {
+			return nil, err
+		}
+	}
+	return store.Open(path)
+}
+
+// defaultDBPath puts the database beside the HTTP response cache.
+func defaultDBPath() string {
+	return filepath.Join(defaultCacheDir(), "analyses.duckdb")
+}
+
+// cacheCommand reports what the analysis database holds, and can prune it.
+func cacheCommand(ctx context.Context, args []string, out io.Writer) error {
+	fs := flag.NewFlagSet("cache", flag.ContinueOnError)
+	dbPath := fs.String("db", defaultDBPath(), "DuckDB file holding computed analyses")
+	pruneBefore := fs.String("prune-before", "", "delete analyses for market days before this date (YYYY-MM-DD)")
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+	// Reading needs no write lock, and pruning does, so only ask for what
+	// this run actually needs.
+	open := store.OpenReadOnly
+	if *pruneBefore != "" {
+		open = store.Open
+	}
+	db, err := open(*dbPath)
+	if errors.Is(err, store.ErrLocked) {
+		return fmt.Errorf("%w\n  a running `mktpredict serve` holds the database; stop it and try again", err)
+	}
+	if err != nil {
+		return err
+	}
+	defer db.Close()
+
+	if *pruneBefore != "" {
+		cutoff, err := time.Parse(time.DateOnly, *pruneBefore)
+		if err != nil {
+			return fmt.Errorf("prune-before: %w", err)
+		}
+		n, err := db.Prune(ctx, cutoff)
+		if err != nil {
+			return err
+		}
+		fmt.Fprintf(out, "pruned %d analyses from before %s\n", n, *pruneBefore)
+	}
+
+	st, err := db.Stats(ctx)
+	if err != nil {
+		return err
+	}
+	fmt.Fprintf(out, "database %s\n", *dbPath)
+	fmt.Fprintf(out, "  analyses      %d across %d symbols\n", st.Analyses, st.Symbols)
+	if st.Analyses > 0 {
+		fmt.Fprintf(out, "  market days   %s to %s\n", st.OldestAsOf, st.NewestAsOf)
+		fmt.Fprintf(out, "  mean compute  %.1fs\n", st.MeanComputeMS/1000)
+	}
+	fmt.Fprintf(out, "  requests      %d, %d served from cache\n", st.Requests, st.CacheHits)
+	return nil
 }

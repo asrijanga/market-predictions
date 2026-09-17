@@ -10,6 +10,7 @@ trades on US stocks. It has three commands:
 | `analyze SYMBOL` | Runs the statistical model over that pack and answers whether the stock is bullish or bearish and why, where it is likely to be next quarter and next year, and when to buy calls. |
 | `serve` | Serves the same analysis to a browser front end: an 80s terminal, rendered in Three.js, that takes one ticker at a time. |
 | `build-site` | Renders that front end plus precomputed analyses into a directory any static host can serve, which is how it goes on GitHub Pages. |
+| `cache` | Reports on, or prunes, the DuckDB database of computed analyses. |
 
 Everything runs locally against public data endpoints (Nasdaq, Google News
 RSS, SEC EDGAR). There are no dependencies outside the Go standard library,
@@ -246,7 +247,9 @@ mktpredict serve -addr :9000 -paths 40000
 ```
 
 A CRT terminal on a desk, rendered in Three.js. Click to power the tube on,
-type a ticker, press return. The machine answers and waits for the next one.
+give an email address, type a ticker, press return. The machine answers and
+waits for the next one, and repeat questions come back from the database in
+milliseconds.
 
 * **The screen is a real terminal.** Text is drawn into a character grid on a
   2D canvas, uploaded as a texture, and put through a shader that does what a
@@ -266,14 +269,56 @@ type a ticker, press return. The machine answers and waits for the next one.
   lifts while an analysis runs. Drag to look around, scroll to lean in.
 
 Flags: `-addr` (localhost:8080), `-paths` (20000), `-rate` (0.04),
-`-max-concurrent` (4), `-timeout` (3m), `-benchmark`, `-sec-contact`,
-`-no-news`, and the cache flags. Symbols are validated against a strict
+`-max-concurrent` (4), `-timeout` (3m), `-db` (the DuckDB file, empty to
+disable), `-benchmark`, `-sec-contact`, `-no-news`, and the cache flags. Symbols are validated against a strict
 pattern before any work starts, and analyses are bounded by a semaphore so a
 page left reloading cannot spawn unbounded work.
 
 Three.js is vendored under `internal/web/static/vendor`, and the whole front
 end is embedded in the binary, so `serve` needs no build step, no package
 manager and no third-party runtime dependency.
+
+## Caching computed analyses
+
+An analysis costs a data fetch plus a few seconds of simulation, and the
+answer only changes when the market day does. Results therefore go into a
+DuckDB database keyed on everything that could change them: the symbol, the
+market day, the path count, the seed and the model version. A repeat
+question is answered from the file; a new trading day, a different path
+count or a changed model all miss and recompute.
+
+| | Cold | From the database |
+| --- | --- | --- |
+| One analysis over the API | 2.9s | 12ms |
+| A three-symbol site build | 4.4s | 34ms |
+
+```sh
+mktpredict cache                            # what is stored, and the hit rate
+mktpredict cache -prune-before 2026-09-01   # drop old market days
+mktpredict serve -db ""                     # or run without a database
+mktpredict build-site -refresh              # recompute even on a hit
+```
+
+The database defaults to `analyses.duckdb` in the cache directory and holds
+two tables: `analyses`, the cache itself, and `requests`, a log of which
+address asked for which symbol and whether it was served from the cache. It
+never leaves the machine it is written on.
+
+Bumping `model.Version` invalidates every cached answer, so any change that
+alters the output for the same inputs must bump it. DuckDB's Go driver needs
+cgo, so builds with `CGO_ENABLED=0` and simple cross-compilation are no
+longer available; the `Dockerfile` accounts for this.
+
+## Asking for an email
+
+The front end asks for an email address before it will run anything, and the
+API rejects a request without a well-formed one. The address is remembered in
+the browser so it is asked for once, typing `EMAIL` at the prompt changes it,
+and each request is recorded in the `requests` table with the symbol and
+whether the cache answered it. Nothing is sent anywhere.
+
+On a published static site there is no server to record anything, so the
+address is only kept in the browser.
 
 ## Hosting it on GitHub Pages
 
@@ -309,6 +354,29 @@ report; finding none, it assumes a live server and streams from
 
 What a published site cannot do is answer for a symbol nobody computed. Ask
 for one and the terminal says so and lists what it has.
+
+## Where to host it
+
+| Option | What you get | What it costs |
+| --- | --- | --- |
+| **GitHub Pages** | The published set, free and with no server to run. Answers only for symbols the workflow computed. | Free |
+| **Fly.io with a volume** | The live machine: any symbol on demand, with the DuckDB cache surviving deploys. The best fit, because the cache wants a persistent disk. | A few dollars a month |
+| **A small VPS** | The same thing with more control. Run the binary under systemd behind a reverse proxy, or the container. | A few dollars a month |
+| **Google Cloud Run** | Scales to zero, so it is nearly free when idle. Its filesystem is ephemeral, so the cache resets whenever an instance recycles and only helps within one. | Usage based |
+
+The `Dockerfile` builds a container for any of the last three. It needs a
+toolchain in the builder and a glibc base at runtime, because the DuckDB
+driver uses cgo:
+
+```sh
+docker build -t mktpredict .
+docker run -p 8080:8080 -v mktpredict-data:/data mktpredict
+```
+
+Mount a volume on `/data` to keep the analyses and the response cache across
+deploys. Publishing to Pages and running a live instance are not exclusive:
+the Pages site is a free, always-available snapshot, and the live instance
+answers for anything else.
 
 ## Runtime
 

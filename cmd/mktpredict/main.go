@@ -41,6 +41,7 @@ Commands:
   analyze   model when to buy calls on one symbol over the next three months
   serve     run the browser front end: a terminal that answers one symbol at a time
   build-site  render the front end plus precomputed analyses for a static host
+  cache     report on, or prune, the stored analyses
 
 Run "mktpredict <command> -h" for flags.
 `
@@ -70,6 +71,8 @@ func main() {
 		err = serveCommand(ctx, args, os.Stdout)
 	case "build-site":
 		err = buildSiteCommand(ctx, args, os.Stdout)
+	case "cache":
+		err = cacheCommand(ctx, args, os.Stdout)
 	case "help", "-h", "--help":
 		fmt.Fprint(os.Stderr, usage)
 	default:

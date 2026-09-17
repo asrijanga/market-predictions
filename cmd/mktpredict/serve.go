@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"flag"
 	"fmt"
 	"io"
@@ -15,6 +16,7 @@ import (
 	"github.com/asrijanga/market-predictions/internal/nasdaq"
 	"github.com/asrijanga/market-predictions/internal/news"
 	"github.com/asrijanga/market-predictions/internal/pack"
+	"github.com/asrijanga/market-predictions/internal/store"
 	"github.com/asrijanga/market-predictions/internal/web"
 )
 
@@ -31,36 +33,69 @@ func serveCommand(ctx context.Context, args []string, out io.Writer) error {
 	timeout := fs.Duration("timeout", 3*time.Minute, "per-analysis timeout")
 	cacheDir := fs.String("cache-dir", defaultCacheDir(), "directory for cached API responses")
 	noCache := fs.Bool("no-cache", false, "bypass the on-disk response cache")
+	dbPath := fs.String("db", defaultDBPath(), "DuckDB file holding computed analyses; empty disables it")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
 
-	var store *cache.Cache
+	// The HTTP response cache and the analysis database are different
+	// things: one saves the fetch, the other saves the whole computation.
+	var responses *cache.Cache
 	if !*noCache {
 		var err error
-		if store, err = cache.New(*cacheDir); err != nil {
+		if responses, err = cache.New(*cacheDir); err != nil {
 			return err
 		}
 	}
-	nq := nasdaq.NewClient(8, store)
+	nq := nasdaq.NewClient(8, responses)
 	sources := pack.Sources{Nasdaq: nq}
 	if !*noNews {
-		sources.News = news.NewClient(nq.HTTP, store)
+		sources.News = news.NewClient(nq.HTTP, responses)
 	}
 	if *secContact != "" {
-		sources.Edgar = edgar.NewClient(nq.HTTP, store, *secContact)
+		sources.Edgar = edgar.NewClient(nq.HTTP, responses, *secContact)
 	}
+
+	db, err := openStore(*dbPath)
+	if err != nil {
+		return err
+	}
+	defer db.Close()
 
 	srv := &web.Server{
 		MaxConcurrent: *concurrency,
-		Analyze: func(ctx context.Context, symbol string, progress web.Progress) (*web.View, error) {
+		Analyze: func(ctx context.Context, req web.Request, progress web.Progress) (*web.View, error) {
 			ctx, cancel := context.WithTimeout(ctx, *timeout)
 			defer cancel()
 
+			symbol := req.Symbol
+			now := marketNow()
+			key := store.Key{
+				Symbol: symbol, AsOf: now, Paths: *paths,
+				Seed: model.Defaults().Seed, ModelVersion: model.Version,
+			}
+			// A repeat question about the same market day is answered from
+			// the database rather than recomputed.
+			if body, ok, err := db.Get(ctx, key); err != nil {
+				log.Printf("cache read %s: %v", symbol, err)
+			} else if ok {
+				var view web.View
+				if err := json.Unmarshal(body, &view); err == nil {
+					view.Cached = true
+					progress("reading the stored analysis", 1)
+					if err := db.RecordRequest(ctx, req.Email, symbol, true); err != nil {
+						log.Printf("record request: %v", err)
+					}
+					return &view, nil
+				}
+				log.Printf("cache decode %s: %v", symbol, err)
+			}
+
+			started := time.Now()
 			progress("fetching one year of prices, options and filings", 0.05)
 			p, err := pack.Build(ctx, sources, symbol, pack.Options{
 				Benchmark: *benchmark, LookbackDays: 252, ModelDays: 756, TrendDays: 126,
-				HorizonDays: 63, NewsDays: 90, MaxHeadlines: 60, RiskFreeRate: *rate, Now: marketNow(),
+				HorizonDays: 63, NewsDays: 90, MaxHeadlines: 60, RiskFreeRate: *rate, Now: now,
 			})
 			if err != nil {
 				return nil, err
@@ -75,7 +110,16 @@ func serveCommand(ctx context.Context, args []string, out io.Writer) error {
 			if err != nil {
 				return nil, err
 			}
-			return web.NewView(p, r), nil
+			view := web.NewView(p, r)
+			if body, err := json.Marshal(view); err != nil {
+				log.Printf("cache encode %s: %v", symbol, err)
+			} else if err := db.Put(ctx, key, body, time.Since(started)); err != nil {
+				log.Printf("cache write %s: %v", symbol, err)
+			}
+			if err := db.RecordRequest(ctx, req.Email, symbol, false); err != nil {
+				log.Printf("record request: %v", err)
+			}
+			return view, nil
 		},
 	}
 
