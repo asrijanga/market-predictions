@@ -55,6 +55,10 @@ type Pack struct {
 	Bars   []market.Bar   `json:"bars"`
 	Weekly []market.Bar   `json:"weekly"`
 
+	// ModelCloses is the full estimation sample, longer than Bars (the
+	// display window), used to fit the volatility models.
+	ModelCloses []float64 `json:"model_closes,omitempty"`
+
 	EarningsDate   time.Time               `json:"earnings_date"`
 	DaysToEarnings int                     `json:"days_to_earnings"`
 	Filings        []market.Filing         `json:"filings"`
@@ -76,7 +80,8 @@ type Sources struct {
 // Options tunes what Build collects.
 type Options struct {
 	Benchmark    string
-	LookbackDays int // trading days of history (252 = 1y)
+	LookbackDays int // trading days of history to display (252 = 1y)
+	ModelDays    int // trading days of history to fetch for model estimation
 	TrendDays    int // window for the momentum model (126 = 6m)
 	HorizonDays  int // projection horizon in trading days
 	NewsDays     int // calendar days of headlines
@@ -88,7 +93,8 @@ type Options struct {
 // Build fetches every input concurrently and assembles the pack.
 func Build(ctx context.Context, src Sources, symbol string, o Options) (*Pack, error) {
 	now := o.Now
-	from := now.AddDate(0, 0, -(o.LookbackDays*7/5 + 21))
+	fetchDays := max(o.LookbackDays, o.ModelDays)
+	from := now.AddDate(0, 0, -(fetchDays*7/5 + 30))
 	p := &Pack{Symbol: symbol, AsOf: now, Benchmark: o.Benchmark, HorizonDays: o.HorizonDays}
 	p.TargetDate = now.AddDate(0, 0, o.HorizonDays*7/5)
 
@@ -163,6 +169,10 @@ func Build(ctx context.Context, src Sources, symbol string, o Options) (*Pack, e
 	if len(r.bars) < o.TrendDays {
 		return nil, fmt.Errorf("%s: only %d bars of history", symbol, len(r.bars))
 	}
+	if len(r.bars) > fetchDays {
+		r.bars = r.bars[len(r.bars)-fetchDays:]
+	}
+	p.ModelCloses = quant.Closes(r.bars)
 	if len(r.bars) > o.LookbackDays {
 		r.bars = r.bars[len(r.bars)-o.LookbackDays:]
 	}

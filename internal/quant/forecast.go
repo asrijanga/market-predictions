@@ -124,11 +124,7 @@ func Analyze(symbol string, bars []market.Bar, bench Stats, lookback, horizon in
 		f.VolumeRatio = SMA(vols, 20) / avg
 	}
 
-	// Projection: shrink the benchmark toward its long-run drift, then shrink
-	// the stock's alpha toward the benchmark in proportion to trend quality.
-	benchDrift := 0.5*bench.Drift + 0.5*longRunDailyDrift
-	shrink := minShrink + shrinkR2*clamp(st.R2, 0, 1)
-	drift := clamp(benchDrift+shrink*(st.Drift-benchDrift), -maxDailyDrift, maxDailyDrift)
+	drift := ShrunkDrift(st, bench)
 
 	h := float64(horizon)
 	muH := drift * h
@@ -145,6 +141,16 @@ func Analyze(symbol string, bars []market.Bar, bench Stats, lookback, horizon in
 	f.Strike = SuggestStrike(price)
 	f.Score, f.Flags = score(f, muH, sigmaH)
 	return f, nil
+}
+
+// ShrunkDrift returns the daily log drift used for projection. The
+// benchmark's fitted drift is pulled halfway toward a long-run anchor, the
+// stock's alpha over that is shrunk in proportion to its trend quality
+// (R²), and the result is capped so nothing extrapolates absurdly.
+func ShrunkDrift(stock, bench Stats) float64 {
+	benchDrift := 0.5*bench.Drift + 0.5*longRunDailyDrift
+	shrink := minShrink + shrinkR2*clamp(stock.R2, 0, 1)
+	return clamp(benchDrift+shrink*(stock.Drift-benchDrift), -maxDailyDrift, maxDailyDrift)
 }
 
 // score converts a forecast into a single call-attractiveness number. The
