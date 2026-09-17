@@ -2,4 +2,11 @@
 /bin/
 *.test
 *.out
+
+# Generated locally and never worth committing. The database in particular
+# holds computed analyses and, in older versions, a request log; keeping it
+# out of the repository matters more now the repository is public.
 /packs/
+/dist/
+*.duckdb
+*.duckdb.wal
