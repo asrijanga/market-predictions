@@ -2,58 +2,54 @@
 <html lang="en">
 <head>
 <meta charset="utf-8">
-<meta name="viewport" content="width=device-width,initial-scale=1">
-<title>MKTPREDICT 8000</title>
-<style>
-  :root { color-scheme: dark; }
-  * { box-sizing: border-box; }
-  html, body { margin: 0; height: 100%; background: #07060b; overflow: hidden; }
-  canvas { display: block; }
-  /* The keyboard input is real but invisible: it exists so that mobile
-     browsers raise a keyboard and so the page receives composed text. */
-  #keyboard-proxy {
-    position: fixed; opacity: 0; pointer-events: none;
-    top: 50%; left: 50%; width: 1px; height: 1px; border: 0;
-  }
-  #hint {
-    position: fixed; left: 0; right: 0; text-align: center;
-    bottom: calc(14px + env(safe-area-inset-bottom, 0px));
-    padding: 0 16px;
-    font: 12px/1.6 ui-monospace, "SF Mono", Menlo, Consolas, monospace;
-    color: #2f6f4a; letter-spacing: .18em; text-transform: uppercase;
-    pointer-events: none; transition: opacity .6s ease; text-shadow: 0 0 8px #0d3;
-  }
-  #hint.gone { opacity: 0; }
-  #boot-gate {
-    position: fixed; inset: 0; display: flex; align-items: center; justify-content: center;
-    background: #07060b; z-index: 10; cursor: pointer;
-    font: 14px/2 ui-monospace, Menlo, Consolas, monospace;
-    color: #46e08a; letter-spacing: .3em; text-transform: uppercase;
-    text-shadow: 0 0 14px #0f8; transition: opacity .5s ease;
-  }
-  #boot-gate.gone { opacity: 0; pointer-events: none; }
-  #boot-gate { flex-direction: column; gap: 18px; }
-  #boot-gate span { animation: pulse 1.6s ease-in-out infinite; }
-  #boot-gate strong {
-    font-weight: 600; font-size: 12px; letter-spacing: .16em; color: #7fe6b0;
-    text-shadow: 0 0 10px #0f8; max-width: 34em; text-align: center; line-height: 2;
-  }
-  @keyframes pulse { 0%,100% { opacity: .35 } 50% { opacity: 1 } }
-</style>
-<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'><rect width='16' height='16' rx='2' fill='%23070610'/><rect x='3' y='7' width='7' height='2' fill='%2346e08a'/></svg>">
-<!-- Three.js is vendored under ./vendor so the binary serves everything it
-     needs and the page works with no third-party runtime dependency. -->
-<script type="importmap">
-{ "imports": { "three": "./vendor/three.module.min.js" } }
-</script>
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<title>MKTPREDICT</title>
+<meta name="description" content="A quantitative read on a listed stock: bullish or bearish, where it might be next quarter and next year, and what the evidence is. An experiment, not financial advice.">
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'><rect width='16' height='16' rx='3' fill='%23070b0e'/><path d='M3 11l3-3 2.5 2L13 5' stroke='%234ade80' stroke-width='1.6' fill='none' stroke-linecap='round' stroke-linejoin='round'/></svg>">
+<link rel="stylesheet" href="./style.css">
 </head>
 <body>
-  <input id="keyboard-proxy" autocomplete="off" autocapitalize="characters" spellcheck="false" aria-label="Terminal input">
-  <div id="hint">type a ticker &middot; enter to run &middot; drag to look &middot; scroll to zoom</div>
-  <div id="boot-gate">
-    <strong>an experiment, for fun &middot; not financial advice &middot; not for any financial benefit</strong>
-    <span>click to power on</span>
+<div class="scanlines" aria-hidden="true"></div>
+
+<header class="topbar">
+  <div class="wrap topbar__inner">
+    <a class="brand" href="./">MKTPREDICT</a>
+    <p class="topbar__meta" id="catalog-meta"></p>
   </div>
-  <script type="module" src="./app.js"></script>
+</header>
+
+<main class="wrap">
+  <p class="disclaimer">
+    <strong>An experiment, for fun.</strong>
+    Not financial advice, and not to be used for any financial benefit.
+    The model can be &mdash; and often is &mdash; wrong.
+  </p>
+
+  <section class="search" aria-label="Look up a stock">
+    <form id="search-form" class="field" role="search">
+      <span class="field__prompt" aria-hidden="true">&#9656;</span>
+      <input id="symbol" class="field__input" type="text"
+             placeholder="type a ticker" aria-label="Ticker symbol"
+             autocomplete="off" autocapitalize="characters" autocorrect="off"
+             spellcheck="false" maxlength="6" enterkeyhint="go"
+             role="combobox" aria-expanded="false" aria-controls="suggestions"
+             aria-autocomplete="list">
+      <button class="field__go" type="submit">Run</button>
+    </form>
+    <ul id="suggestions" class="suggest" role="listbox" aria-label="Matching symbols" hidden></ul>
+    <p class="search__hint" id="search-hint"></p>
+  </section>
+
+  <section id="result" class="result" aria-live="polite" aria-busy="false"></section>
+</main>
+
+<footer class="footer wrap">
+  <p>Every reading is produced by a fitted model &mdash; an OLS trend, a GARCH(1,1)
+     volatility forecast, an implied-volatility surface and 20,000 simulated price
+     paths &mdash; from public market data. No opinions, no news, no forecasts from anyone.</p>
+  <p>Published figures are computed when the site is built, not live.</p>
+</footer>
+
+<script type="module" src="./app.js"></script>
 </body>
 </html>
