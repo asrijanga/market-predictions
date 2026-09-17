@@ -36,6 +36,8 @@ concurrency:
 jobs:
   build:
     runs-on: ubuntu-latest
+    outputs:
+      ready: ${{ steps.pages.outputs.ready }}
     steps:
       - uses: actions/checkout@v4
 
@@ -45,19 +47,41 @@ jobs:
           cache: true
 
       # Before spending a quarter of an hour computing, check there is
-      # somewhere to publish to. enablement turns Pages on when it is off,
-      # which needs a public repository or a paid plan; either way this
-      # fails in seconds rather than after the build.
+      # somewhere to publish to. A repository whose owner has not switched
+      # Pages on is not a broken build, so this reports and stops rather
+      # than failing: a nightly job that goes red over an unset setting
+      # trains everyone to ignore its mail.
+      - name: Is Pages configured?
+        id: pages
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          if gh api "repos/$GITHUB_REPOSITORY/pages" >/dev/null 2>&1; then
+            echo "ready=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          # Not enabled. Try to switch it on; the token is allowed to only
+          # when the repository settings permit it.
+          if gh api -X POST "repos/$GITHUB_REPOSITORY/pages" \
+               -f "build_type=workflow" >/dev/null 2>&1; then
+            echo "ready=true" >> "$GITHUB_OUTPUT"
+            echo "::notice::Enabled GitHub Pages for this repository."
+            exit 0
+          fi
+          echo "ready=false" >> "$GITHUB_OUTPUT"
+          echo "::warning::GitHub Pages is not enabled, and this workflow is not permitted to enable it. Set Settings -> Pages -> Source to GitHub Actions. Nothing was built or deployed."
+
       - uses: actions/configure-pages@v5
-        with:
-          enablement: true
+        if: steps.pages.outputs.ready == 'true'
 
       - name: Verify
+        if: steps.pages.outputs.ready == 'true'
         run: |
           go vet ./...
           go test ./...
 
       - name: Build the site
+        if: steps.pages.outputs.ready == 'true'
         env:
           SYMBOLS: ${{ inputs.symbols }}
           TOP: ${{ inputs.top || '500' }}
@@ -75,11 +99,13 @@ jobs:
           echo "Published $(python3 -c 'import json;print(len(json.load(open("dist/data/index.json"))["symbols"]))') symbols"
 
       - uses: actions/upload-pages-artifact@v3
+        if: steps.pages.outputs.ready == 'true'
         with:
           path: dist
 
   deploy:
     needs: build
+    if: needs.build.outputs.ready == 'true'
     runs-on: ubuntu-latest
     environment:
       name: github-pages
