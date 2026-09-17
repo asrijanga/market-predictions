@@ -96,7 +96,8 @@ func Render(r *Result) string {
 	w("- The direction call is a weighted score of observable evidence. It sets the drift of the simulation, and drift is what dominates option returns, so treat the %+.1f%%/yr it implies as the assumption to argue with.", 100*r.AnnualDrift)
 	w("- The one-year range is wide by construction: %s. Volatility compounds with the square root of time and a year contains four earnings reports.",
 		yearRangeText(r))
-	w("- %d simulated paths, seed %d. Nothing here is investment advice.", r.Paths, r.Seed)
+	w("- %d simulated paths, seed %d.", r.Paths, r.Seed)
+	w("- This is an experiment, built for fun. It is not financial advice and must not be used for any financial benefit.")
 	if len(r.Warnings) > 0 {
 		w("- Data warnings: %s.", strings.Join(r.Warnings, "; "))
 	}
@@ -316,7 +317,8 @@ func RenderDetail(r *Result) string {
 	w("- Payoff: European, held to expiry, no early exercise and no dividends.")
 	w("- Ranking: expected log growth at a %.0f%% stake rather than expected return, so a plan is not rewarded for being a lottery ticket. An entry must leave at least %d trading days to expiry.", 100*RankingStake, minRunway)
 	w("- Drift is the weakest input: a capped, shrunk trend estimate, not a forecast of news. The break-even drift and the sensitivity table are there so the reader can substitute their own view.")
-	w("- Trading-day counts ignore exchange holidays. Nothing here is investment advice.")
+	w("- Trading-day counts ignore exchange holidays.")
+	w("- This is an experiment, built for fun. It is not financial advice and must not be used for any financial benefit.")
 	return b.String()
 }
 

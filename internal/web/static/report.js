@@ -93,6 +93,13 @@ export function listPage(catalog, page) {
   ];
 }
 
+// DISCLAIMER is shown on the boot screen and under every report. The
+// machine is a toy, and it says so wherever it says anything else.
+export const DISCLAIMER = [
+  '\x02 AN EXPERIMENT, FOR FUN. NOT FINANCIAL ADVICE.',
+  '\x02 DO NOT USE THIS FOR ANY FINANCIAL BENEFIT.',
+];
+
 export function lines(view, catalog) {
   const out = [];
   out.push(...banner(view));
@@ -145,6 +152,8 @@ export function lines(view, catalog) {
     out.push('');
     out.push(`\x01 PUBLISHED SET, COMPUTED ${catalog.asOf}. NOT LIVE PRICES.`);
   }
+  out.push('');
+  out.push(...DISCLAIMER);
   return out;
 }
 
@@ -173,6 +182,8 @@ export function boot(catalog) {
     out.push('');
     out.push('READY.');
     out.push('');
+    out.push(...DISCLAIMER);
+    out.push('');
     out.push(`\x01${catalog.symbols.length} SYMBOLS ON FILE, COMPUTED ${catalog.asOf}.`);
     out.push('\x01ANYTHING ELSE AND THIS MACHINE WILL SAY IT DOES NOT KNOW.');
     out.push('');
@@ -184,6 +195,8 @@ export function boot(catalog) {
     out.push('\x01MONTE CARLO ENGINE ....................... OK');
     out.push('');
     out.push('READY.');
+    out.push('');
+    out.push(...DISCLAIMER);
     out.push('');
     out.push('\x01TYPE A TICKER SYMBOL AND PRESS RETURN.');
     out.push('\x01EXAMPLES: AAPL   NVDA   MSFT   WDC');

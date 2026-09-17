@@ -57,6 +57,7 @@ func Table(w io.Writer, r Result) error {
 	}
 	fmt.Fprintln(w)
 	fmt.Fprintln(w, "Exp% = model expected return to expiry; Target = expected price; ±1σ = one-standard-deviation price band;")
-	fmt.Fprintln(w, "Strike = first listed strike at/above spot. Heuristic momentum model, not investment advice.")
+	fmt.Fprintln(w, "Strike = first listed strike at/above spot.")
+	fmt.Fprintln(w, "An experiment, for fun. Not financial advice; do not use for any financial benefit.")
 	return nil
 }
