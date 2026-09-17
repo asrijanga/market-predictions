@@ -44,6 +44,14 @@ jobs:
           go-version: '1.24'
           cache: true
 
+      # Before spending a quarter of an hour computing, check there is
+      # somewhere to publish to. enablement turns Pages on when it is off,
+      # which needs a public repository or a paid plan; either way this
+      # fails in seconds rather than after the build.
+      - uses: actions/configure-pages@v5
+        with:
+          enablement: true
+
       - name: Verify
         run: |
           go vet ./...
@@ -66,7 +74,6 @@ jobs:
           test -f dist/data/index.json
           echo "Published $(python3 -c 'import json;print(len(json.load(open("dist/data/index.json"))["symbols"]))') symbols"
 
-      - uses: actions/configure-pages@v5
       - uses: actions/upload-pages-artifact@v3
         with:
           path: dist
