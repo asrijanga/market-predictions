@@ -8,6 +8,7 @@ trades on US stocks. It has three commands:
 | `scan` | Ranks the largest liquid US stocks as call candidates from six months of price history. |
 | `pack SYMBOL` | Builds a one-year data pack for one stock: prices, trend statistics, the live option chain with implied volatility, earnings date, SEC filings and headlines. |
 | `analyze SYMBOL` | Runs the statistical model over that pack and answers whether the stock is bullish or bearish and why, where it is likely to be next quarter and next year, and when to buy calls. |
+| `serve` | Serves the same analysis to a browser front end: an 80s terminal, rendered in Three.js, that takes one ticker at a time. |
 
 Everything runs locally against public data endpoints (Nasdaq, Google News
 RSS, SEC EDGAR). There are no dependencies outside the Go standard library,
@@ -234,6 +235,44 @@ Flags: `-detail`, `-paths` (20000), `-seed` (1), `-drift`
    the assumed drift, so every plan is re-simulated across a grid from -20%
    to +40%/yr and reports its break-even drift: the annual return the stock
    needs for the plan to return nothing.
+
+## `serve`
+
+```sh
+export SEC_CONTACT_EMAIL=you@example.com
+mktpredict serve                    # http://localhost:8080
+mktpredict serve -addr :9000 -paths 40000
+```
+
+A CRT terminal on a desk, rendered in Three.js. Click to power the tube on,
+type a ticker, press return. The machine answers and waits for the next one.
+
+* **The screen is a real terminal.** Text is drawn into a character grid on a
+  2D canvas, uploaded as a texture, and put through a shader that does what a
+  cathode ray tube did to an image: barrel distortion across curved glass,
+  scanlines and an aperture grille, colour separation that grows toward the
+  edges, phosphor bleed on the brightest glyphs, a rolling refresh bar, mains
+  flicker and a vignette. Powering on opens the picture from a horizontal
+  line, the way a tube warms up.
+* **Waiting is not a spinner.** The server streams its real stages over
+  server-sent events, so the screen names the stage it is on: fitting the
+  volatility model, decomposing the surface, simulating paths, ranking plans.
+  While it waits it draws what the server is doing, a fan of simulated price
+  paths spreading out from today with the distribution of where they end
+  piling up against the right edge as the run proceeds.
+* **The room responds.** The screen is a light source, so the case, the
+  keyboard and the desk are lit by whatever the tube is showing, and the glow
+  lifts while an analysis runs. Drag to look around, scroll to lean in.
+
+Flags: `-addr` (localhost:8080), `-paths` (20000), `-rate` (0.04),
+`-max-concurrent` (4), `-timeout` (3m), `-benchmark`, `-sec-contact`,
+`-no-news`, and the cache flags. Symbols are validated against a strict
+pattern before any work starts, and analyses are bounded by a semaphore so a
+page left reloading cannot spawn unbounded work.
+
+Three.js is vendored under `internal/web/static/vendor`, and the whole front
+end is embedded in the binary, so `serve` needs no build step, no package
+manager and no third-party runtime dependency.
 
 ## Runtime
 

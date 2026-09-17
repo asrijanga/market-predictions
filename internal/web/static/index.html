@@ -1,0 +1,49 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>MKTPREDICT 8000</title>
+<style>
+  :root { color-scheme: dark; }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; height: 100%; background: #07060b; overflow: hidden; }
+  canvas { display: block; }
+  /* The keyboard input is real but invisible: it exists so that mobile
+     browsers raise a keyboard and so the page receives composed text. */
+  #keyboard-proxy {
+    position: fixed; opacity: 0; pointer-events: none;
+    top: 50%; left: 50%; width: 1px; height: 1px; border: 0;
+  }
+  #hint {
+    position: fixed; left: 0; right: 0; bottom: 14px; text-align: center;
+    font: 12px/1.6 ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+    color: #2f6f4a; letter-spacing: .18em; text-transform: uppercase;
+    pointer-events: none; transition: opacity .6s ease; text-shadow: 0 0 8px #0d3;
+  }
+  #hint.gone { opacity: 0; }
+  #boot-gate {
+    position: fixed; inset: 0; display: grid; place-items: center;
+    background: #07060b; z-index: 10; cursor: pointer;
+    font: 14px/2 ui-monospace, Menlo, Consolas, monospace;
+    color: #46e08a; letter-spacing: .3em; text-transform: uppercase;
+    text-shadow: 0 0 14px #0f8; transition: opacity .5s ease;
+  }
+  #boot-gate.gone { opacity: 0; pointer-events: none; }
+  #boot-gate span { animation: pulse 1.6s ease-in-out infinite; }
+  @keyframes pulse { 0%,100% { opacity: .35 } 50% { opacity: 1 } }
+</style>
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'><rect width='16' height='16' rx='2' fill='%23070610'/><rect x='3' y='7' width='7' height='2' fill='%2346e08a'/></svg>">
+<!-- Three.js is vendored under ./vendor so the binary serves everything it
+     needs and the page works with no third-party runtime dependency. -->
+<script type="importmap">
+{ "imports": { "three": "./vendor/three.module.min.js" } }
+</script>
+</head>
+<body>
+  <input id="keyboard-proxy" autocomplete="off" autocapitalize="characters" spellcheck="false" aria-label="Terminal input">
+  <div id="hint">type a ticker &middot; enter to run &middot; drag to look &middot; scroll to zoom</div>
+  <div id="boot-gate"><span>click to power on</span></div>
+  <script type="module" src="./app.js"></script>
+</body>
+</html>
