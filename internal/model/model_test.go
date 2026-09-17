@@ -287,3 +287,36 @@ func TestAnalyzeCoversEveryTradableExpiry(t *testing.T) {
 		}
 	}
 }
+
+// A chain with nothing liquid enough to trade costs the reader the entry
+// plan, not the whole analysis: the verdict is built from prices well
+// before contracts are screened, and dropping it would leave large caps
+// with wide option markets looking like unknown tickers.
+func TestAnalyzeKeepsTheVerdictWithoutTradableContracts(t *testing.T) {
+	p := testPack(t)
+	o := Defaults()
+	o.Paths = 4000
+	o.MinOI = 1 << 30 // no listed contract can clear this
+
+	r, err := Analyze(p, o)
+	if err != nil {
+		t.Fatalf("Analyze failed instead of reporting an empty screen: %v", err)
+	}
+	if len(r.Contracts) != 0 || len(r.Strategies) != 0 {
+		t.Fatalf("expected an empty screen, got %d contracts and %d strategies",
+			len(r.Contracts), len(r.Strategies))
+	}
+	if r.Stance == "" || len(r.Outlooks) == 0 || len(r.Signals) == 0 {
+		t.Errorf("verdict is incomplete: stance=%q outlooks=%d signals=%d",
+			r.Stance, len(r.Outlooks), len(r.Signals))
+	}
+	var noted bool
+	for _, w := range r.Warnings {
+		if strings.Contains(w, "liquidity filters") {
+			noted = true
+		}
+	}
+	if !noted {
+		t.Errorf("the empty screen is not explained in the warnings: %v", r.Warnings)
+	}
+}

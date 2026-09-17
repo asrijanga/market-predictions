@@ -307,9 +307,19 @@ func Analyze(p *pack.Pack, o Options) (*Result, error) {
 	}
 
 	// 8. Candidate contracts.
+	//
+	// The verdict above stands on prices alone, so a chain with nothing
+	// liquid enough to trade costs us the entry plan, not the analysis.
+	// Plenty of large caps list options that no sane filter would let
+	// through -- wide spreads, thin open interest -- and dropping those
+	// names entirely would leave the reader with nothing when we have a
+	// perfectly good read on the direction.
 	r.Contracts = selectContracts(p, r, ivm, g, nextVar, o)
 	if len(r.Contracts) == 0 {
-		return nil, fmt.Errorf("model: no liquid call contracts for %s within the filters", p.Symbol)
+		r.Warnings = append(r.Warnings, "no call contracts clear the liquidity filters; no entry plan is offered")
+		r.Elapsed = time.Since(start).Round(time.Millisecond).String()
+		report("done", 1)
+		return r, nil
 	}
 
 	// 9. Buy-today baseline and the ranked window search.
