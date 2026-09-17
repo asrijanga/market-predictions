@@ -47,6 +47,10 @@ type Options struct {
 	MinPTrade   float64
 	MaxExpiry   int // furthest expiry to consider, in trading days
 	EntryDays   int // how far out an entry window may start, in trading days
+
+	// Progress, when set, is called as each stage of the analysis begins,
+	// so a caller can drive a progress display. Fraction runs 0 to 1.
+	Progress func(stage string, fraction float64)
 }
 
 // Defaults returns the standard settings.
@@ -136,6 +140,10 @@ func Analyze(p *pack.Pack, o Options) (*Result, error) {
 	}
 	returns := quant.LogReturns(closes)
 
+	report := o.Progress
+	if report == nil {
+		report = func(string, float64) {}
+	}
 	start := time.Now()
 	r := &Result{
 		Symbol: p.Symbol, AsOf: p.AsOf, Spot: p.Price, Paths: o.Paths, Seed: o.Seed,
@@ -143,14 +151,17 @@ func Analyze(p *pack.Pack, o Options) (*Result, error) {
 	}
 
 	// 1. Volatility dynamics.
+	report("fitting GARCH(1,1) volatility model", 0.05)
 	g := FitGARCH(returns)
 	nextVar := g.NextVar(returns)
 	r.GARCH = g
 	r.GARCHVol = math.Sqrt(nextVar * quant.TradingDaysPerYear)
 	r.LongRunVol = math.Sqrt(g.UncondVar * quant.TradingDaysPerYear)
+	report("scoring volatility forecasts out of sample", 0.15)
 	r.VolScores = ScoreVolModels(returns, min(250, len(returns)/3))
 
 	// 2. Event structure and the implied-volatility surface.
+	report("decomposing the implied volatility surface", 0.35)
 	if !p.EarningsDate.IsZero() {
 		r.EarningsIdx = quant.TradingDays(p.AsOf, p.EarningsDate)
 	}
@@ -188,6 +199,7 @@ func Analyze(p *pack.Pack, o Options) (*Result, error) {
 
 	// 3. Direction. The signals are scored first, because the composite is
 	// what sets the drift the simulation runs at.
+	report("scoring directional signals", 0.45)
 	r.Signals, r.Score = Signals(p, ivm)
 	r.Stance = Stance(r.Score)
 
@@ -225,6 +237,7 @@ func Analyze(p *pack.Pack, o Options) (*Result, error) {
 		Paths: o.Paths, Horizon: simHorizon, DailyDrift: drift, StartVar: nextVar,
 		EarningsDays: earningsSchedule(r.EarningsIdx, simHorizon), JumpStdev: ivm.JumpStdev, Seed: o.Seed,
 	}
+	report(fmt.Sprintf("simulating %d price paths", o.Paths), 0.5)
 	sim := Simulate(g, g.Resid, cfg)
 
 	rnCfg := cfg
@@ -233,6 +246,7 @@ func Analyze(p *pack.Pack, o Options) (*Result, error) {
 
 	// The drift grid only has to reach the furthest expiry, since it exists
 	// to re-score option plans rather than the forecast.
+	report("running the drift sensitivity grid", 0.7)
 	gridSims := make([]*Sim, len(DriftGrid))
 	for i, annual := range DriftGrid {
 		gcfg := cfg
@@ -243,6 +257,7 @@ func Analyze(p *pack.Pack, o Options) (*Result, error) {
 	}
 
 	// 6. Directional forecast.
+	report("building the quarter and year outlook", 0.8)
 	quarter := min(63, simHorizon)
 	r.Outlooks = append(r.Outlooks, BuildOutlook("Next quarter", quarter, p.AsOf, p.Price, sim, rnSim))
 	if o.OutlookDays > quarter {
@@ -295,6 +310,7 @@ func Analyze(p *pack.Pack, o Options) (*Result, error) {
 	}
 
 	entryHorizon := min(horizon-minRunway, o.EntryDays)
+	report("ranking entry plans", 0.88)
 	all := Search(sim, p.Price, ivm, r.Contracts, BuildWindows(p.AsOf, entryHorizon, r.EarningsIdx), DefaultTriggers(), o.Rate)
 	top := TopDistinct(all, o.TopN, o.MinPTrade)
 	for i := range top {
@@ -305,6 +321,7 @@ func Analyze(p *pack.Pack, o Options) (*Result, error) {
 	}
 	r.Strategies = top
 	r.Elapsed = time.Since(start).Round(time.Millisecond).String()
+	report("done", 1)
 	return r, nil
 }
 

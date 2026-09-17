@@ -1,0 +1,71 @@
+# Publishes the terminal front end to GitHub Pages with a freshly computed
+# set of analyses.
+#
+# Pages serves static files only, and neither Nasdaq nor the news feed sends
+# cross-origin headers, so a browser on github.io cannot reach them. The
+# model therefore runs here, on a schedule, and the site serves the answers.
+name: Publish site
+
+on:
+  push:
+    branches: [main]
+  schedule:
+    # 22:30 UTC on weekdays, after the US close.
+    - cron: '30 22 * * 1-5'
+  workflow_dispatch:
+    inputs:
+      symbols:
+        description: Comma-separated symbols to publish
+        required: false
+        default: ''
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+# One deployment at a time; a scheduled run should not fight a push.
+concurrency:
+  group: pages
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.24'
+          cache: true
+
+      - name: Verify
+        run: |
+          go vet ./...
+          go test ./...
+
+      - name: Build the site
+        env:
+          # Falls back to the built-in list when the input is empty.
+          SYMBOLS: ${{ inputs.symbols }}
+        run: |
+          go run ./cmd/mktpredict build-site -out dist \
+            ${SYMBOLS:+-symbols "$SYMBOLS"}
+          test -f dist/data/index.json
+          echo "Published $(python3 -c 'import json;print(len(json.load(open("dist/data/index.json"))["symbols"]))') symbols"
+
+      - uses: actions/configure-pages@v5
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: dist
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - id: deployment
+        uses: actions/deploy-pages@v4
