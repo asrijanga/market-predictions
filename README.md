@@ -1,5 +1,11 @@
 # market-predictions
 
+> **This is an experiment, built for fun.** It is not financial advice, it
+> is not a trading tool, and it must not be used for any financial benefit.
+> The numbers it prints come from a toy model over public data, and nothing
+> it says should be acted on with real money. Treat it as a curiosity that
+> happens to draw a nice CRT.
+
 `mktpredict` is a Go command-line tool for finding and timing call-option
 trades on US stocks, with a browser front end. Six commands:
 
@@ -19,12 +25,6 @@ fetching that data.
 The only dependency is DuckDB, which stores computed analyses so a repeated
 question is instant. Its Go driver uses cgo, so building needs a C
 toolchain and `CGO_ENABLED=0` builds are not available.
-
-> **This is an experiment, built for fun.** It is not financial advice, it
-> is not a trading tool, and it must not be used for any financial benefit.
-> The numbers it prints come from a toy model over public data, and nothing
-> it says should be acted on with real money. Treat it as a curiosity that
-> happens to draw a nice CRT.
 
 ## Install
 

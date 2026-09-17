@@ -102,6 +102,8 @@ export const DISCLAIMER = [
 
 export function lines(view, catalog) {
   const out = [];
+  out.push(...DISCLAIMER);
+  out.push('');
   out.push(...banner(view));
   const run = view.cached ? `${view.elapsed} (FROM CACHE)` : view.elapsed;
   out.push(`\x01 SPOT ${view.spot.toFixed(2)}   AS OF ${view.asOf}   RUN ${run}`);
@@ -152,8 +154,6 @@ export function lines(view, catalog) {
     out.push('');
     out.push(`\x01 PUBLISHED SET, COMPUTED ${catalog.asOf}. NOT LIVE PRICES.`);
   }
-  out.push('');
-  out.push(...DISCLAIMER);
   return out;
 }
 
@@ -171,6 +171,8 @@ function signalLine(s, sign) {
 // this is: one wired to a live model, or one serving a published set.
 export function boot(catalog) {
   const out = [
+    ...DISCLAIMER,
+    '',
     'MKTPREDICT 8000  (C) 1984 MKTPREDICT SYSTEMS',
     '64K RAM SYSTEM   ANALYTIC COPROCESSOR PRESENT',
     '',
@@ -181,8 +183,6 @@ export function boot(catalog) {
     out.push('\x01MONTE CARLO ENGINE ....................... OK');
     out.push('');
     out.push('READY.');
-    out.push('');
-    out.push(...DISCLAIMER);
     out.push('');
     out.push(`\x01${catalog.symbols.length} SYMBOLS ON FILE, COMPUTED ${catalog.asOf}.`);
     out.push('\x01ANYTHING ELSE AND THIS MACHINE WILL SAY IT DOES NOT KNOW.');
@@ -195,8 +195,6 @@ export function boot(catalog) {
     out.push('\x01MONTE CARLO ENGINE ....................... OK');
     out.push('');
     out.push('READY.');
-    out.push('');
-    out.push(...DISCLAIMER);
     out.push('');
     out.push('\x01TYPE A TICKER SYMBOL AND PRESS RETURN.');
     out.push('\x01EXAMPLES: AAPL   NVDA   MSFT   WDC');

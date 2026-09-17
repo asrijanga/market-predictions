@@ -32,7 +32,10 @@
   #boot-gate.gone { opacity: 0; pointer-events: none; }
   #boot-gate { flex-direction: column; gap: 18px; }
   #boot-gate span { animation: pulse 1.6s ease-in-out infinite; }
-  #boot-gate small { font-size: 11px; letter-spacing: .14em; color: #2f6f4a; text-shadow: 0 0 8px #0d3; }
+  #boot-gate strong {
+    font-weight: 600; font-size: 12px; letter-spacing: .16em; color: #7fe6b0;
+    text-shadow: 0 0 10px #0f8; max-width: 34em; text-align: center; line-height: 2;
+  }
   @keyframes pulse { 0%,100% { opacity: .35 } 50% { opacity: 1 } }
 </style>
 <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'><rect width='16' height='16' rx='2' fill='%23070610'/><rect x='3' y='7' width='7' height='2' fill='%2346e08a'/></svg>">
@@ -45,7 +48,10 @@
 <body>
   <input id="keyboard-proxy" autocomplete="off" autocapitalize="characters" spellcheck="false" aria-label="Terminal input">
   <div id="hint">type a ticker &middot; enter to run &middot; drag to look &middot; scroll to zoom</div>
-  <div id="boot-gate"><span>click to power on</span><small>an experiment, for fun &middot; not financial advice &middot; not for any financial benefit</small></div>
+  <div id="boot-gate">
+    <strong>an experiment, for fun &middot; not financial advice &middot; not for any financial benefit</strong>
+    <span>click to power on</span>
+  </div>
   <script type="module" src="./app.js"></script>
 </body>
 </html>
