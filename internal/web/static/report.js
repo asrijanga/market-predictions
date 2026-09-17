@@ -113,7 +113,7 @@ function signalLine(s, sign) {
 // this is: one wired to a live model, or one serving a published set.
 export function boot(catalog) {
   const out = [
-    'MKTPREDICT 8000  (C) 1984 ASRIJANGA SYSTEMS',
+    'MKTPREDICT 8000  (C) 1984 MKTPREDICT SYSTEMS',
     '64K RAM SYSTEM   ANALYTIC COPROCESSOR PRESENT',
     '',
     '\x01SELF TEST ................................ OK',
