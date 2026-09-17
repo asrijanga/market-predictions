@@ -1,12 +1,10 @@
-// Command mktpredict ranks liquid US stocks as call-option candidates by
-// analysing the last six months of daily prices and projecting them to a
-// chosen options expiry.
+// Command mktpredict finds and times call-option trades on US stocks.
 //
-// Usage:
+//	mktpredict scan [flags]           rank a universe of stocks as call candidates
+//	mktpredict pack SYMBOL [flags]    build a one-year data pack for one stock
+//	mktpredict analyze SYMBOL [flags] build the pack and have Claude time the entry
 //
-//	mktpredict [flags]
-//	mktpredict -expiry 2026-11 -n 15
-//	mktpredict -symbols AAPL,MSFT,NVDA -json
+// Run any subcommand with -h for its flags.
 package main
 
 import (
@@ -33,6 +31,51 @@ import (
 	"github.com/asrijanga/market-predictions/internal/universe"
 )
 
+const usage = `usage: mktpredict <command> [flags]
+
+Commands:
+  scan      rank the largest liquid US stocks as call candidates (default)
+  pack      build a one-year data pack (prices, options, news, filings) for one symbol
+  analyze   build the pack and ask Claude when to buy calls in the next three months
+
+Run "mktpredict <command> -h" for flags.
+`
+
+func main() {
+	log.SetFlags(0)
+	log.SetPrefix("mktpredict: ")
+
+	args := os.Args[1:]
+	cmd := "scan"
+	if len(args) > 0 && !strings.HasPrefix(args[0], "-") {
+		cmd, args = args[0], args[1:]
+	}
+
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt)
+	defer stop()
+
+	var err error
+	switch cmd {
+	case "scan":
+		err = scanCommand(ctx, args, os.Stdout)
+	case "pack":
+		err = packCommand(ctx, args, os.Stdout, false)
+	case "analyze":
+		err = packCommand(ctx, args, os.Stdout, true)
+	case "help", "-h", "--help":
+		fmt.Fprint(os.Stderr, usage)
+	default:
+		fmt.Fprint(os.Stderr, usage)
+		err = fmt.Errorf("unknown command %q", cmd)
+	}
+	if err != nil {
+		if errors.Is(err, flag.ErrHelp) {
+			os.Exit(2)
+		}
+		log.Fatal(err)
+	}
+}
+
 type config struct {
 	symbols         string
 	top             int
@@ -52,37 +95,31 @@ type config struct {
 	verbose         bool
 }
 
-func main() {
-	log.SetFlags(0)
-	log.SetPrefix("mktpredict: ")
-
+func scanCommand(ctx context.Context, args []string, out io.Writer) error {
+	fs := flag.NewFlagSet("scan", flag.ContinueOnError)
 	var cfg config
-	flag.StringVar(&cfg.symbols, "symbols", "", "comma-separated symbols to analyse instead of the screener universe")
-	flag.IntVar(&cfg.top, "top", 150, "universe size: largest N stocks by market cap")
-	flag.IntVar(&cfg.picks, "n", 15, "number of ranked picks to print")
-	flag.IntVar(&cfg.lookback, "lookback", 126, "analysis window in trading days (126 ≈ 6 months)")
-	flag.IntVar(&cfg.horizon, "horizon", 63, "projection horizon in trading days (63 ≈ 3 months); ignored when -expiry is set")
-	flag.StringVar(&cfg.expiry, "expiry", "", "target options expiry as YYYY-MM (third Friday) or YYYY-MM-DD")
-	flag.StringVar(&cfg.benchmark, "benchmark", "SPY", "benchmark symbol for relative strength")
-	flag.Float64Var(&cfg.minPrice, "min-price", 5, "minimum share price for universe membership")
-	flag.Float64Var(&cfg.minDollarVolume, "min-dollar-volume", 20e6, "minimum daily dollar volume for universe membership")
-	flag.IntVar(&cfg.concurrency, "concurrency", 24, "parallel HTTP requests")
-	flag.DurationVar(&cfg.timeout, "timeout", 3*time.Minute, "overall run timeout")
-	flag.StringVar(&cfg.cacheDir, "cache-dir", defaultCacheDir(), "directory for cached API responses")
-	flag.BoolVar(&cfg.noCache, "no-cache", false, "bypass the on-disk response cache")
-	flag.BoolVar(&cfg.jsonOut, "json", false, "emit JSON instead of a table")
-	flag.BoolVar(&cfg.all, "all", false, "print every analysed symbol, not just the top -n")
-	flag.BoolVar(&cfg.verbose, "v", false, "log progress and skipped symbols to stderr")
-	flag.Parse()
-
-	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt)
-	defer stop()
+	fs.StringVar(&cfg.symbols, "symbols", "", "comma-separated symbols to analyse instead of the screener universe")
+	fs.IntVar(&cfg.top, "top", 150, "universe size: largest N stocks by market cap")
+	fs.IntVar(&cfg.picks, "n", 15, "number of ranked picks to print")
+	fs.IntVar(&cfg.lookback, "lookback", 126, "analysis window in trading days (126 ≈ 6 months)")
+	fs.IntVar(&cfg.horizon, "horizon", 63, "projection horizon in trading days (63 ≈ 3 months); ignored when -expiry is set")
+	fs.StringVar(&cfg.expiry, "expiry", "", "target options expiry as YYYY-MM (third Friday) or YYYY-MM-DD")
+	fs.StringVar(&cfg.benchmark, "benchmark", "SPY", "benchmark symbol for relative strength")
+	fs.Float64Var(&cfg.minPrice, "min-price", 5, "minimum share price for universe membership")
+	fs.Float64Var(&cfg.minDollarVolume, "min-dollar-volume", 20e6, "minimum daily dollar volume for universe membership")
+	fs.IntVar(&cfg.concurrency, "concurrency", 24, "parallel HTTP requests")
+	fs.DurationVar(&cfg.timeout, "timeout", 3*time.Minute, "overall run timeout")
+	fs.StringVar(&cfg.cacheDir, "cache-dir", defaultCacheDir(), "directory for cached API responses")
+	fs.BoolVar(&cfg.noCache, "no-cache", false, "bypass the on-disk response cache")
+	fs.BoolVar(&cfg.jsonOut, "json", false, "emit JSON instead of a table")
+	fs.BoolVar(&cfg.all, "all", false, "print every analysed symbol, not just the top -n")
+	fs.BoolVar(&cfg.verbose, "v", false, "log progress and skipped symbols to stderr")
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
 	ctx, cancel := context.WithTimeout(ctx, cfg.timeout)
 	defer cancel()
-
-	if err := run(ctx, cfg, os.Stdout); err != nil {
-		log.Fatal(err)
-	}
+	return run(ctx, cfg, out)
 }
 
 func run(ctx context.Context, cfg config, out io.Writer) error {
