@@ -34,6 +34,10 @@ func serveCommand(ctx context.Context, args []string, out io.Writer) error {
 	cacheDir := fs.String("cache-dir", defaultCacheDir(), "directory for cached API responses")
 	noCache := fs.Bool("no-cache", false, "bypass the on-disk response cache")
 	dbPath := fs.String("db", defaultDBPath(), "DuckDB file holding computed analyses; empty disables it")
+	rateBurst := fs.Int("rate-burst", 0, "analyses one address may start at once; 0 disables rate limiting")
+	rateRefill := fs.Duration("rate-refill", time.Minute, "how long until an address earns another analysis")
+	allowOrigin := fs.String("allow-origin", "", "origin permitted to call the API cross-origin, for a front end hosted elsewhere")
+	keep := fs.Int("cache-entries", 5000, "analyses to keep before evicting the least recently used; 0 keeps everything")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
@@ -62,8 +66,46 @@ func serveCommand(ctx context.Context, args []string, out io.Writer) error {
 	}
 	defer db.Close()
 
+	// The database is the only thing that grows without a natural bound on
+	// a public server, so trim it to the most recently used entries at
+	// startup and once an hour after that.
+	if *keep > 0 && db != nil {
+		evict := func() {
+			n, err := db.Evict(ctx, *keep)
+			if err != nil {
+				log.Printf("evict: %v", err)
+			} else if n > 0 {
+				log.Printf("evicted %d least recently used analyses", n)
+			}
+		}
+		evict()
+		go func() {
+			ticker := time.NewTicker(time.Hour)
+			defer ticker.Stop()
+			for {
+				select {
+				case <-ctx.Done():
+					return
+				case <-ticker.C:
+					evict()
+				}
+			}
+		}()
+	}
+
 	srv := &web.Server{
 		MaxConcurrent: *concurrency,
+		RateBurst:     *rateBurst,
+		Cached: func(ctx context.Context, symbol string) bool {
+			now := marketNow()
+			ok, err := db.Has(ctx, store.Key{
+				Symbol: symbol, AsOf: now, Paths: *paths,
+				Seed: model.Defaults().Seed, ModelVersion: model.Version,
+			}, freshFor(now))
+			return err == nil && ok
+		},
+		RateRefill:  *rateRefill,
+		AllowOrigin: *allowOrigin,
 		Analyze: func(ctx context.Context, symbol string, progress web.Progress) (*web.View, error) {
 			ctx, cancel := context.WithTimeout(ctx, *timeout)
 			defer cancel()
@@ -73,9 +115,9 @@ func serveCommand(ctx context.Context, args []string, out io.Writer) error {
 				Symbol: symbol, AsOf: now, Paths: *paths,
 				Seed: model.Defaults().Seed, ModelVersion: model.Version,
 			}
-			// A repeat question about the same market day is answered from
-			// the database rather than recomputed.
-			if body, ok, err := db.Get(ctx, key); err != nil {
+			// A repeat question is answered from the database rather than
+			// recomputed, for as long as the answer can still be right.
+			if body, ok, err := db.Get(ctx, key, freshFor(now)); err != nil {
 				log.Printf("cache read %s: %v", symbol, err)
 			} else if ok {
 				var view web.View

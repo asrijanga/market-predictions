@@ -1,23 +1,16 @@
-# Publishes the terminal front end to GitHub Pages with a freshly computed
-# set of analyses.
+# Publishes the front end to GitHub Pages.
 #
 # Pages serves static files only, and neither Nasdaq nor the news feed sends
-# cross-origin headers, so a browser on github.io cannot reach them. The
-# model therefore runs here, on a schedule, and the site serves the answers.
+# cross-origin headers, so a browser on github.io cannot reach them. It does
+# not compute here either: the page is given the address of the server that
+# does, and asks it when a reader asks for a symbol. Publishing is therefore
+# a file copy, and nothing on this schedule goes stale.
 name: Publish site
 
 on:
   push:
     branches: [main]
-  schedule:
-    # 22:30 UTC on weekdays, after the US close.
-    - cron: '30 22 * * 1-5'
   workflow_dispatch:
-    inputs:
-      symbols:
-        description: Comma-separated symbols to publish, overriding the top-N default
-        required: false
-        default: ''
       top:
         description: Publish the N largest liquid US stocks
         required: false
@@ -83,20 +76,15 @@ jobs:
       - name: Build the site
         if: steps.pages.outputs.ready == 'true'
         env:
-          SYMBOLS: ${{ inputs.symbols }}
-          TOP: ${{ inputs.top || '500' }}
-        # An explicit symbol list wins; otherwise publish the N largest
-        # liquid US stocks. Five hundred analyses take roughly a quarter of
-        # an hour, so the step is given room.
-        timeout-minutes: 50
+          API: ${{ vars.API_BASE_URL || 'https://market-predictions.fly.dev' }}
+        # Nothing is computed here any more. The server analyses on demand,
+        # so publishing is a copy of four files plus a pointer at it, and a
+        # deploy takes seconds instead of a quarter of an hour.
+        timeout-minutes: 5
         run: |
-          if [ -n "$SYMBOLS" ]; then
-            go run ./cmd/mktpredict build-site -out dist -symbols "$SYMBOLS" -workers 6 -timeout 45m
-          else
-            go run ./cmd/mktpredict build-site -out dist -top "$TOP" -workers 6 -timeout 45m
-          fi
-          test -f dist/data/index.json
-          echo "Published $(python3 -c 'import json;print(len(json.load(open("dist/data/index.json"))["symbols"]))') symbols"
+          go run ./cmd/mktpredict build-site -out dist -api "$API"
+          test -f dist/config.json
+          echo "Front end published, computing against $API"
 
       - uses: actions/upload-pages-artifact@v3
         if: steps.pages.outputs.ready == 'true'

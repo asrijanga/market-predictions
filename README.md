@@ -299,10 +299,10 @@ runtime.
 
 ## Running it as a service
 
-The published site bakes its answers in at build time, so new numbers need
-a new build. Running the server instead makes a recalculation a request:
-the first call for a symbol each day computes it, and everything after that
-comes back from the database in milliseconds.
+Nothing is computed at deploy time. The published page carries the address
+of this server and asks it when a reader asks for a symbol, so publishing
+is a file copy that takes seconds, and a recalculation is a request rather
+than a release.
 
 `fly.toml` and `.github/workflows/deploy.yml` deploy `serve` to Fly. The
 only manual step is a token: on fly.io, choose your organisation from the
@@ -328,6 +328,44 @@ mind before changing it:
 * **Memory follows concurrency.** One analysis peaks around 300MB, so the
   1GB machine runs `-max-concurrent 2`. Raise the two together or the
   fourth simultaneous request meets the OOM killer.
+* **A mounted volume shadows the image's directory and arrives owned by
+  root**, so `docker-entrypoint.sh` fixes the ownership while it is still
+  root and drops to the app user before running anything. Without it the
+  server cannot create its database, exits, and the deploy fails on health
+  checks with nothing in flyctl's output to say why.
+
+### How long an answer is kept
+
+`freshFor` decides, and it follows the market rather than a round number.
+Every statistic in the verdict but two is built from daily closing bars,
+which do not move until the session ends; the exceptions are the spot price
+and the live option chain, and they only move while the market is open. So
+an entry computed during the session is served for fifteen minutes, and one
+computed after the close is served until the cache key itself rolls over,
+because that key carries the market date. Recomputing is lazy, so a short
+window costs nothing when nobody is asking.
+
+Eviction is least-recently-used: `Get` stamps `last_used`, and the server
+trims to `-cache-entries` at startup and hourly. The database is the only
+thing on the volume that grows without a natural bound, because a public
+server is asked about symbols nobody asks about twice.
+
+### Rate limiting
+
+The endpoint is open to anyone and one miss costs eight seconds of CPU plus
+a round of requests to Nasdaq, who rate-limit by IP and will throttle this
+whole server for one visitor's script. `-rate-burst` and `-rate-refill` are
+a per-address token bucket: five new analyses at once, then one every two
+minutes.
+
+Only computation is rationed. A symbol already in the store is served
+without taking a token, so a visitor who has spent their budget can still
+read everything that is there — the limit protects the CPU and the upstream
+provider, and a cache hit touches neither. Behind Fly every visitor shares
+the proxy's address, so the client is identified by `Fly-Client-IP`, then
+`X-Forwarded-For`, then the socket. Those headers are client-settable in
+principle, which makes this a fair-use measure rather than a security
+boundary.
 
 The volume also carries the HTTP response cache (`XDG_CACHE_HOME=/data`),
 which matters more than its size suggests: Nasdaq rate-limits by IP and

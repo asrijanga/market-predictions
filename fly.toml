@@ -30,7 +30,7 @@ primary_region = 'iad'          # close to the Nasdaq endpoints
     hard_limit = 8
 
   [[http_service.checks]]
-    grace_period = '10s'
+    grace_period = '30s'
     interval = '30s'
     method = 'GET'
     timeout = '5s'
@@ -46,7 +46,11 @@ primary_region = 'iad'          # close to the Nasdaq endpoints
   size = 'shared-cpu-1x'
   memory = '1gb'
 
-# One analysis peaks around 300MB, so two at once fits 1GB with headroom.
-# Raise both together if you move to a larger machine.
+# One analysis peaks around 300MB, so two at once fits 1GB with headroom;
+# raise both together if you move to a larger machine. The rate limit is
+# sized for a person exploring -- five new symbols at once, then one every
+# two minutes -- while anything already computed stays free to read. The
+# published front end lives on github.io and calls this from there, which
+# is what -allow-origin permits.
 [processes]
-  app = 'mktpredict serve -addr 0.0.0.0:8080 -max-concurrent 2'
+  app = 'mktpredict serve -addr 0.0.0.0:8080 -max-concurrent 2 -rate-burst 5 -rate-refill 2m -cache-entries 5000 -allow-origin https://asrijanga.github.io'

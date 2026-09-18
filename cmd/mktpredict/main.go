@@ -326,3 +326,40 @@ func defaultCacheDir() string {
 	}
 	return filepath.Join(base, "mktpredict")
 }
+
+// freshFor says how long a stored analysis may be served before it is
+// recomputed, given the time of day in New York.
+//
+// Every statistic in the verdict but two is built from daily closing bars,
+// which do not move until the session ends. The exceptions are the spot
+// price and the live option chain, and they only move while the market is
+// open. So an entry computed during the session goes stale in minutes, and
+// one computed after the close stays correct until the next close -- which
+// the cache key handles by itself, because it carries the market date.
+//
+// Recomputing is lazy, so a short window costs nothing when nobody asks.
+func freshFor(now time.Time) time.Duration {
+	if !marketOpen(now) {
+		return 0 // no expiry within the trading day the key already pins
+	}
+	return 15 * time.Minute
+}
+
+// marketOpen reports whether the US equity market is in its regular
+// session. It knows weekends and hours, not holidays: a holiday costs a
+// needless recomputation, never a wrong answer, because the data it refetches
+// is simply unchanged.
+func marketOpen(now time.Time) bool {
+	loc, err := time.LoadLocation("America/New_York")
+	if err != nil {
+		return false
+	}
+	t := now.In(loc)
+	switch t.Weekday() {
+	case time.Saturday, time.Sunday:
+		return false
+	}
+	minutes := t.Hour()*60 + t.Minute()
+	const open, close = 9*60 + 30, 16 * 60
+	return minutes >= open && minutes < close
+}

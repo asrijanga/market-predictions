@@ -11,18 +11,22 @@ RUN CGO_ENABLED=1 go build -trimpath -ldflags="-s -w" -o /out/mktpredict ./cmd/m
 
 FROM debian:bookworm-slim
 RUN apt-get update \
- && apt-get install -y --no-install-recommends ca-certificates tzdata \
+ && apt-get install -y --no-install-recommends ca-certificates tzdata util-linux \
  && rm -rf /var/lib/apt/lists/*
 
 # The analysis database and the HTTP response cache live here. Mount a
 # volume on it to keep them across deploys.
 RUN useradd --create-home --uid 10001 mkt \
  && mkdir -p /data && chown mkt:mkt /data
-USER mkt
 VOLUME /data
 ENV XDG_CACHE_HOME=/data
 
 COPY --from=build /out/mktpredict /usr/local/bin/mktpredict
+COPY docker-entrypoint.sh /usr/local/bin/docker-entrypoint.sh
+
+# The container starts as root only long enough to hand the volume to mkt;
+# the entrypoint drops to that user before running anything.
+ENTRYPOINT ["/usr/local/bin/docker-entrypoint.sh"]
 
 EXPOSE 8080
 # 0.0.0.0 rather than localhost, so the container is reachable.

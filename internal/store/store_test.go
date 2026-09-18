@@ -30,14 +30,14 @@ func TestPutThenGet(t *testing.T) {
 	day := time.Date(2026, 9, 17, 0, 0, 0, 0, time.UTC)
 	key := testKey("AAPL", day)
 
-	if _, ok, err := s.Get(ctx, key); err != nil || ok {
+	if _, ok, err := s.Get(ctx, key, 0); err != nil || ok {
 		t.Fatalf("empty store returned ok=%v err=%v", ok, err)
 	}
 	payload := json.RawMessage(`{"symbol":"AAPL","stance":"bullish","score":0.76}`)
 	if err := s.Put(ctx, key, payload, 4*time.Second); err != nil {
 		t.Fatal(err)
 	}
-	got, ok, err := s.Get(ctx, key)
+	got, ok, err := s.Get(ctx, key, 0)
 	if err != nil || !ok {
 		t.Fatalf("ok=%v err=%v", ok, err)
 	}
@@ -71,7 +71,7 @@ func TestKeyPartsAllMiss(t *testing.T) {
 		"different version": {Symbol: "AAPL", AsOf: day, Paths: 20000, Seed: 1, ModelVersion: "v2"},
 	}
 	for name, key := range others {
-		if _, ok, err := s.Get(ctx, key); err != nil || ok {
+		if _, ok, err := s.Get(ctx, key, 0); err != nil || ok {
 			t.Errorf("%s should miss the cache (ok=%v err=%v)", name, ok, err)
 		}
 	}
@@ -87,7 +87,7 @@ func TestPutReplaces(t *testing.T) {
 	if err := s.Put(ctx, key, json.RawMessage(`{"score":2}`), time.Second); err != nil {
 		t.Fatal(err)
 	}
-	got, _, err := s.Get(ctx, key)
+	got, _, err := s.Get(ctx, key, 0)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -153,7 +153,7 @@ func TestPrune(t *testing.T) {
 	if n != 1 {
 		t.Fatalf("pruned %d rows, want 1", n)
 	}
-	if _, ok, _ := s.Get(ctx, testKey("AAPL", recent)); !ok {
+	if _, ok, _ := s.Get(ctx, testKey("AAPL", recent), 0); !ok {
 		t.Error("prune removed a recent analysis")
 	}
 }
@@ -161,7 +161,7 @@ func TestPrune(t *testing.T) {
 func TestNilStoreIsUsable(t *testing.T) {
 	var s *Store
 	ctx := context.Background()
-	if _, ok, err := s.Get(ctx, testKey("AAPL", time.Now())); ok || err != nil {
+	if _, ok, err := s.Get(ctx, testKey("AAPL", time.Now()), 0); ok || err != nil {
 		t.Errorf("nil store Get: ok=%v err=%v", ok, err)
 	}
 	if err := s.Put(ctx, testKey("AAPL", time.Now()), json.RawMessage(`{}`), 0); err != nil {
@@ -194,7 +194,7 @@ func TestOpenReadOnlyReads(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer reader.Close()
-	got, ok, err := reader.Get(context.Background(), testKey("AAPL", day))
+	got, ok, err := reader.Get(context.Background(), testKey("AAPL", day), 0)
 	if err != nil || !ok {
 		t.Fatalf("ok=%v err=%v", ok, err)
 	}
@@ -297,5 +297,61 @@ func TestOpenErasesAddressesFromAnOlderDatabase(t *testing.T) {
 	// The cache itself must be untouched by the migration.
 	if err := s.RecordRequest(context.Background(), "AAPL", true); err != nil {
 		t.Fatal(err)
+	}
+}
+
+func TestGetExpiresStaleEntries(t *testing.T) {
+	db := testStore(t)
+	key := Key{Symbol: "AAPL", AsOf: time.Now(), Paths: 100, Seed: 1, ModelVersion: "v"}
+	if err := db.Put(t.Context(), key, json.RawMessage(`{"symbol":"AAPL"}`), time.Second); err != nil {
+		t.Fatal(err)
+	}
+	// Any age is acceptable when no maximum is asked for.
+	if _, ok, err := db.Get(t.Context(), key, 0); err != nil || !ok {
+		t.Fatalf("fresh entry missing with no max age: ok=%v err=%v", ok, err)
+	}
+	if _, ok, err := db.Get(t.Context(), key, time.Hour); err != nil || !ok {
+		t.Fatalf("entry written moments ago read as stale: ok=%v err=%v", ok, err)
+	}
+	// A window shorter than the entry's age reports a miss, so the caller
+	// recomputes rather than serving a number the market has moved past.
+	if _, ok, err := db.Get(t.Context(), key, time.Nanosecond); err != nil {
+		t.Fatal(err)
+	} else if ok {
+		t.Error("a stale entry was served")
+	}
+}
+
+func TestEvictKeepsTheMostRecentlyUsed(t *testing.T) {
+	db := testStore(t)
+	now := time.Now()
+	for _, sym := range []string{"AAA", "BBB", "CCC", "DDD"} {
+		key := Key{Symbol: sym, AsOf: now, Paths: 100, Seed: 1, ModelVersion: "v"}
+		if err := db.Put(t.Context(), key, json.RawMessage(`{}`), time.Second); err != nil {
+			t.Fatal(err)
+		}
+		time.Sleep(2 * time.Millisecond)
+	}
+	// Touching AAA makes it the most recently used despite being written
+	// first, which is the whole point of evicting by use rather than age.
+	if _, ok, err := db.Get(t.Context(), Key{Symbol: "AAA", AsOf: now, Paths: 100, Seed: 1, ModelVersion: "v"}, 0); err != nil || !ok {
+		t.Fatalf("AAA missing: ok=%v err=%v", ok, err)
+	}
+
+	n, err := db.Evict(t.Context(), 2)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if n != 2 {
+		t.Errorf("evicted %d rows, want 2", n)
+	}
+	for sym, want := range map[string]bool{"AAA": true, "DDD": true, "BBB": false, "CCC": false} {
+		_, ok, err := db.Get(t.Context(), Key{Symbol: sym, AsOf: now, Paths: 100, Seed: 1, ModelVersion: "v"}, 0)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if ok != want {
+			t.Errorf("%s present = %v, want %v", sym, ok, want)
+		}
 	}
 }

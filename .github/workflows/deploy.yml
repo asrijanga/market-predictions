@@ -89,6 +89,15 @@ jobs:
           FLY_API_TOKEN: ${{ secrets.FLY_API_TOKEN }}
         run: flyctl deploy --remote-only --wait-timeout 10m
 
+      # A failed deploy is usually the machine refusing to start, and the
+      # reason is in its logs rather than in flyctl's output. Print them
+      # here or the next person debugging this is guessing.
+      - name: Machine logs
+        if: failure() && steps.fly.outputs.ready == 'true'
+        env:
+          FLY_API_TOKEN: ${{ secrets.FLY_API_TOKEN }}
+        run: flyctl logs --no-tail | tail -100 || echo "no logs available"
+
       # A deploy that reports success while serving errors is worse than a
       # failed one, so prove the running machine answers before finishing.
       - name: Check it is serving

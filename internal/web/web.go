@@ -18,6 +18,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"strconv"
 	"strings"
 	"time"
 
@@ -77,7 +78,22 @@ type Server struct {
 	// MaxConcurrent bounds how many analyses run at once, so a page left
 	// hammering reload cannot spawn unbounded work.
 	MaxConcurrent int
-	sem           chan struct{}
+	// RateBurst and RateRefill bound how much work one visitor can ask
+	// for: RateBurst analyses at once, then one more every RateRefill.
+	// Zero leaves the endpoint open, which is right for a local run.
+	RateBurst  int
+	RateRefill time.Duration
+	// AllowOrigin answers cross-origin calls from a front end hosted
+	// somewhere else, such as the published static site. Empty allows none.
+	AllowOrigin string
+	// Cached reports whether a symbol can be answered without computing.
+	// Reading a stored answer costs nothing, so it is never rationed; the
+	// limit exists to protect the CPU and the upstream data provider, and
+	// neither is touched by a cache hit.
+	Cached func(ctx context.Context, symbol string) bool
+
+	sem  chan struct{}
+	rate *limiter
 }
 
 // Handler returns the routes: the front end at the root, the stream at
@@ -87,6 +103,13 @@ func (s *Server) Handler() http.Handler {
 		s.MaxConcurrent = 4
 	}
 	s.sem = make(chan struct{}, s.MaxConcurrent)
+	if s.RateBurst > 0 {
+		refill := s.RateRefill
+		if refill <= 0 {
+			refill = time.Minute
+		}
+		s.rate = newLimiter(s.RateBurst, refill)
+	}
 
 	mux := http.NewServeMux()
 	mux.Handle("/", http.FileServer(http.FS(Assets())))
@@ -95,11 +118,44 @@ func (s *Server) Handler() http.Handler {
 }
 
 func (s *Server) handleAnalyze(w http.ResponseWriter, r *http.Request) {
+	if s.AllowOrigin != "" {
+		w.Header().Set("Access-Control-Allow-Origin", s.AllowOrigin)
+		w.Header().Set("Vary", "Origin")
+	}
+	if r.Method == http.MethodOptions {
+		w.Header().Set("Access-Control-Allow-Methods", "GET, OPTIONS")
+		w.WriteHeader(http.StatusNoContent)
+		return
+	}
 	symbol := strings.ToUpper(strings.TrimSpace(r.URL.Query().Get("symbol")))
 	if !symbolPattern.MatchString(symbol) {
 		http.Error(w, "bad symbol", http.StatusBadRequest)
 		return
 	}
+
+	// Only computation is rationed. An answer already in the store costs
+	// nothing to serve, so it is never refused -- otherwise a visitor who
+	// spent their budget could not read what is sitting there, which is
+	// the opposite of what the limit is for.
+	client := clientIP(r)
+	charged := false
+	if s.Cached == nil || !s.Cached(r.Context(), symbol) {
+		if ok, wait := s.rate.allow(client); !ok {
+			w.Header().Set("Retry-After", strconv.Itoa(int(wait.Seconds())+1))
+			http.Error(w, "too many new analyses from this address; try again in "+
+				wait.Round(time.Second).String()+". Symbols already computed stay available.",
+				http.StatusTooManyRequests)
+			return
+		}
+		charged = true
+	}
+	// The answer can still arrive from the store if another request
+	// computed it while this one waited for a slot, so hand the token back.
+	defer func() {
+		if charged {
+			s.rate.refund(client)
+		}
+	}()
 	flusher, ok := w.(http.Flusher)
 	if !ok {
 		http.Error(w, "streaming unsupported", http.StatusInternalServerError)
@@ -140,6 +196,9 @@ func (s *Server) handleAnalyze(w http.ResponseWriter, r *http.Request) {
 		log.Printf("web: %s: %v", symbol, err)
 		send("error", map[string]string{"message": userMessage(symbol, err)})
 		return
+	}
+	if view == nil || !view.Cached {
+		charged = false // the work happened; the token stays spent
 	}
 	send("result", view)
 }
@@ -296,4 +355,20 @@ func breakEvenLabel(d float64) string {
 	default:
 		return fmt.Sprintf("%+.1f%%/YR", 100*d)
 	}
+}
+
+// WriteConfig tells a published front end where to send its analyses.
+//
+// A static host cannot run the model and cannot reach the data providers
+// either, because none of them send CORS headers. Naming a server that can
+// is what lets the published page compute on demand instead of serving
+// answers baked in at build time.
+func WriteConfig(dir, api string) error {
+	body, err := json.Marshal(struct {
+		API string `json:"api"`
+	}{API: strings.TrimRight(api, "/")})
+	if err != nil {
+		return err
+	}
+	return os.WriteFile(filepath.Join(dir, "config.json"), body, 0o644)
 }
