@@ -329,10 +329,16 @@ mind before changing it:
   1GB machine runs `-max-concurrent 2`. Raise the two together or the
   fourth simultaneous request meets the OOM killer.
 * **A mounted volume shadows the image's directory and arrives owned by
-  root**, so `docker-entrypoint.sh` fixes the ownership while it is still
-  root and drops to the app user before running anything. Without it the
-  server cannot create its database, exits, and the deploy fails on health
-  checks with nothing in flyctl's output to say why.
+  root** (`Mounting /dev/vdc at /data w/ uid: 0, gid: 0`), so
+  `docker-entrypoint.sh` fixes the ownership while it is still root and
+  drops to the app user before running anything.
+* **Both Docker stages pin the same Debian release.** A cgo binary links
+  against the builder's glibc and will not start on an older one, and the
+  unqualified `golang` tag follows Debian's newest release. Leaving it
+  implicit produced an image that built, pushed, and then died on boot with
+  `libm.so.6: version GLIBC_2.38 not found`. The runtime stage runs the
+  binary once at build time so a link error fails the build rather than the
+  deploy.
 
 ### How long an answer is kept
 
