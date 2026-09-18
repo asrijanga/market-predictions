@@ -304,12 +304,20 @@ a new build. Running the server instead makes a recalculation a request:
 the first call for a symbol each day computes it, and everything after that
 comes back from the database in milliseconds.
 
-`fly.toml` and `.github/workflows/deploy.yml` deploy `serve` to Fly. Set a
-`FLY_API_TOKEN` repository secret (`fly tokens create deploy`) and the
-workflow ships on every push that touches the server, or on demand from the
-Actions tab. Without the secret it warns and skips rather than failing, and
-after a deploy it polls the public URL until it answers before reporting
-success.
+`fly.toml` and `.github/workflows/deploy.yml` deploy `serve` to Fly. The
+only manual step is a token: on fly.io, choose your organisation from the
+dropdown, click **Tokens**, create an org-scoped one, and save it as a
+`FLY_API_TOKEN` repository secret. It has to be org-scoped rather than
+app-scoped because the workflow creates the app and its volume on the first
+run, so there is nothing to set up in the dashboard by hand.
+
+After that the workflow ships on every push that touches the server, or on
+demand from the Actions tab. Without the secret it warns and skips rather
+than failing, and after a deploy it polls the public URL until it answers
+before reporting success.
+
+Fly app names are globally unique. If the first deploy reports that the
+name is taken, change `app` in `fly.toml` and push again.
 
 Two constraints shape the machine definition, and both are worth keeping in
 mind before changing it:

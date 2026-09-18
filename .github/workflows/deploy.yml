@@ -49,6 +49,40 @@ jobs:
       - uses: superfly/flyctl-actions/setup-flyctl@master
         if: steps.fly.outputs.ready == 'true'
 
+      # Create the app and its volume if they are not there yet, so the
+      # only thing anyone has to do by hand is produce a token. Both steps
+      # are no-ops once they exist, which makes a first deploy and the
+      # hundredth the same command.
+      - name: Make sure the app and volume exist
+        if: steps.fly.outputs.ready == 'true'
+        env:
+          FLY_API_TOKEN: ${{ secrets.FLY_API_TOKEN }}
+          FLY_ORG: ${{ vars.FLY_ORG || 'personal' }}
+        run: |
+          set -euo pipefail
+          app=$(python3 -c "import tomllib; print(tomllib.load(open('fly.toml','rb'))['app'])")
+          region=$(python3 -c "import tomllib; print(tomllib.load(open('fly.toml','rb'))['primary_region'])")
+          volume=$(python3 -c "import tomllib; print(tomllib.load(open('fly.toml','rb'))['mounts']['source'])")
+
+          if flyctl apps list --json | python3 -c "import json,sys; sys.exit(0 if '$app' in [a['Name'] for a in json.load(sys.stdin)] else 1)"; then
+            echo "app $app already exists"
+          else
+            echo "creating app $app in org $FLY_ORG"
+            # Fly app names are globally unique, so a clash here is a name
+            # collision with a stranger's app, not a broken workflow.
+            if ! flyctl apps create "$app" --org "$FLY_ORG"; then
+              echo "::error::Could not create the Fly app '$app'. App names are global, so it may be taken. Change the 'app' name in fly.toml and push again."
+              exit 1
+            fi
+          fi
+
+          if flyctl volumes list -a "$app" --json | python3 -c "import json,sys; sys.exit(0 if any(v['name'] == '$volume' for v in json.load(sys.stdin)) else 1)"; then
+            echo "volume $volume already exists"
+          else
+            echo "creating a 3GB volume '$volume' in $region"
+            flyctl volumes create "$volume" -a "$app" -r "$region" -n 1 -s 3 --yes
+          fi
+
       - name: Deploy
         if: steps.fly.outputs.ready == 'true'
         env:
