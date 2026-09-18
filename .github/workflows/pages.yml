@@ -76,7 +76,7 @@ jobs:
       - name: Build the site
         if: steps.pages.outputs.ready == 'true'
         env:
-          API: ${{ vars.API_BASE_URL || 'https://market-predictions.fly.dev' }}
+          API: ${{ vars.API_BASE_URL || 'https://ajanga-mrkt-predictions.fly.dev' }}
         # Nothing is computed here any more. The server analyses on demand,
         # so publishing is a copy of four files plus a pointer at it, and a
         # deploy takes seconds instead of a quarter of an hour.

@@ -6,7 +6,7 @@
 # first request for a symbol each day computes it, and every request after
 # that comes back from the DuckDB cache on the volume in milliseconds.
 
-app = 'market-predictions'
+app = 'ajanga-mrkt-predictions'
 primary_region = 'iad'          # close to the Nasdaq endpoints
 
 [build]
