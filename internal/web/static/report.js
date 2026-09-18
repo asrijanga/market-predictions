@@ -82,40 +82,6 @@ function verdictCard(view) {
     }));
 }
 
-// --------------------------------------------------------------- outlook
-
-function outlookCard(o, spot) {
-  const up = o.direction === 'up';
-  const medianPrice = spot * (1 + o.median);
-  const span = Math.max(1e-9, o.high - o.low);
-  const at = (price) =>
-    `${Math.min(100, Math.max(0, ((price - o.low) / span) * 100))}%`;
-
-  return el('div', { class: 'card' },
-    el('p', { class: 'outlook__name', text: o.name }),
-    el('p', { class: 'outlook__dir', 'data-tone': up ? 'bull' : 'bear' },
-      el('span', { text: up ? '▲ Up' : '▼ Down' }),
-      el('span', { class: 'outlook__prob', text: `${chance(o.probUp)} chance of a rise` })),
-    el('p', { class: 'stat' },
-      el('span', { class: 'stat__label', text: 'Typical move' }),
-      el('span', { class: 'stat__value', text: percent(o.median) })),
-    el('p', { class: 'stat' },
-      el('span', { class: 'stat__label', text: 'Target date' }),
-      el('span', { class: 'stat__value', text: o.date })),
-    el('div', { class: 'range' },
-      el('p', { class: 'range__legend' },
-        el('span', { class: 'range__key', 'data-kind': 'spot' }, ` now $${money(spot)}`),
-        el('span', { class: 'range__key', 'data-kind': 'median' }, ` median $${money(medianPrice)}`)),
-      el('div', { class: 'range__track' },
-        el('span', { class: 'range__band' }),
-        el('span', { class: 'range__mark', 'data-kind': 'spot', style: `left:${at(spot)}` }),
-        el('span', { class: 'range__mark', 'data-kind': 'median', style: `left:${at(medianPrice)}` })),
-      el('div', { class: 'range__ends' },
-        el('span', { text: `$${money(o.low)}` }),
-        el('span', { text: '80% of outcomes' }),
-        el('span', { text: `$${money(o.high)}` }))));
-}
-
 // --------------------------------------------------------------- signals
 
 function signalRow(s) {
@@ -130,41 +96,90 @@ function signalRow(s) {
 function signalGroup(title, rows) {
   if (!rows?.length) return null;
   return el('div', { class: 'card' },
-    el('p', { class: 'outlook__name', text: title }),
+    el('p', { class: 'fair__label', text: title }),
     el('div', { class: 'signals' }, rows.map(signalRow)));
 }
 
-// ------------------------------------------------------------------ plan
+// ------------------------------------------------------------ fair value
 
-function planCard(plan) {
-  if (!plan) {
+// fairCard is the heart of the page: what the shares cost, what the
+// filings say they are worth, and the distance between the two.
+function fairCard(view) {
+  const f = view.fair;
+  const cheap = f.upside > 0;
+
+  const card = el('div', { class: 'card fair' },
+    el('div', { class: 'fair__pair' },
+      el('div', { class: 'fair__side' },
+        el('p', { class: 'fair__label', text: 'Trading at' }),
+        el('p', { class: 'fair__price', text: `$${money(view.spot)}` })),
+      el('div', { class: 'fair__arrow', 'data-tone': cheap ? 'bull' : 'bear' },
+        el('span', { text: cheap ? '\u2192' : '\u2192' })),
+      el('div', { class: 'fair__side' },
+        el('p', { class: 'fair__label', text: 'Looks worth' }),
+        el('p', { class: 'fair__price', 'data-tone': cheap ? 'bull' : 'bear',
+          text: `$${money(f.value)}` }))),
+    el('p', { class: 'fair__gap', 'data-tone': cheap ? 'bull' : 'bear' },
+      // "above" already carries the direction; a minus sign as well reads
+      // as a double negative.
+      `${Math.abs(100 * f.upside).toFixed(1)}% ${cheap ? 'below' : 'above'} what the filings support`));
+
+  const detail = el('div', { class: 'fair__detail' },
+    stat('Confidence', f.confidence, `the models span ${Math.round(100 * (f.spread ?? 0))}% of the estimate`),
+    stat('Discount rate', `${(100 * f.discount).toFixed(1)}%`, 'risk-free plus this share of market risk'),
+    stat('Growth assumed', `${(100 * f.growth).toFixed(1)}%/yr`, 'from the analysts, capped'),
+  );
+  if (f.trailingPE) {
+    detail.append(stat('Price / earnings', f.trailingPE.toFixed(1),
+      f.forwardPE ? `${f.forwardPE.toFixed(1)} on next year's` : 'trailing'));
+  }
+  card.append(detail);
+
+  if (f.methods?.length) {
+    const list = el('div', { class: 'methods' });
+    for (const m of f.methods) {
+      list.append(el('div', { class: 'method' },
+        el('span', { class: 'method__name', text: sentence(m.name) }),
+        el('span', { class: 'method__value', text: `$${money(m.value)}` }),
+        el('span', { class: 'method__weight', text: `${Math.round(100 * m.weight)}%` }),
+        el('span', { class: 'method__note', text: m.note })));
+    }
+    card.append(el('details', { class: 'methods__wrap' },
+      el('summary', { text: 'How that was worked out' }), list));
+  }
+  return card;
+}
+
+function stat(label, value, note) {
+  return el('div', { class: 'ministat' },
+    el('span', { class: 'ministat__label', text: label }),
+    el('span', { class: 'ministat__value', text: value }),
+    note ? el('span', { class: 'ministat__note', text: note }) : null);
+}
+
+// --------------------------------------------------------------- timing
+
+function timingCard(t) {
+  if (!t) {
     return el('div', { class: 'card plan--empty' },
-      'No call option on this stock clears the liquidity filters, so there is ' +
-      'no entry plan worth naming. The reading above stands on its own.');
+      'This multiple has not returned to its own level reliably enough to time. ' +
+      'A gap can stay open for years, and pretending otherwise would be the ' +
+      'least honest thing on this page.');
   }
   return el('div', { class: 'card' },
-    el('p', { class: 'plan__line' },
-      'Wait for ',
-      el('span', { class: 'plan__key', text: plan.trigger.toLowerCase() }),
-      ' between ', el('span', { class: 'plan__key', text: plan.window }),
-      ', then buy the ',
-      el('span', { class: 'plan__key', text: `${plan.expiry} $${plan.strike}` }),
-      ' call.'),
-    el('p', { class: 'stat' },
-      el('span', { class: 'stat__label', text: 'Chance the trigger fires' }),
-      el('span', { class: 'stat__value', text: chance(plan.fillProb) })),
-    el('p', { class: 'stat' },
-      el('span', { class: 'stat__label', text: 'Return if it does' }),
-      el('span', { class: 'stat__value', text: percent(plan.meanReturn) })),
-    el('p', { class: 'stat' },
-      el('span', { class: 'stat__label', text: 'Chance of a profit' }),
-      el('span', { class: 'stat__value', text: chance(plan.probProfit) })),
-    el('p', { class: 'stat' },
-      el('span', { class: 'stat__label', text: 'Cost per contract' }),
-      el('span', { class: 'stat__value', text: `$${money(plan.cost)}` })),
-    el('p', { class: 'stat' },
-      el('span', { class: 'stat__label', text: 'Break-even drift' }),
-      el('span', { class: 'stat__value', text: plan.breakEven.toLowerCase() })));
+    el('p', { class: 'timing__head' },
+      el('span', { class: 'timing__value', text: monthsLabel(t.medianMonths) }),
+      el('span', { class: 'timing__note', text: 'for half of simulated paths to reach fair value' })),
+    el('div', { class: 'fair__detail' },
+      stat('Half the gap closes in', monthsLabel(t.halfLifeMonths), 'on the fitted reversion speed'),
+      stat('Arrive within a year', `${Math.round(100 * t.withinYear)}%`, 'of simulated paths')));
+}
+
+function monthsLabel(m) {
+  if (!m || m <= 0) return 'no estimate';
+  if (m < 1.5) return 'about a month';
+  if (m < 24) return `${Math.round(m)} months`;
+  return `${(m / 12).toFixed(1)} years`;
 }
 
 // ----------------------------------------------------------------- notes
@@ -172,9 +187,8 @@ function planCard(plan) {
 function notes(view, catalog) {
   const items = [];
   if (view.earnings) {
-    items.push(`Earnings on ${view.earnings}. The options market is pricing a ` +
-      `${percent(view.impliedMove)} move around it, and implied volatility ` +
-      `falls about ${Math.round(view.crush * 100)}% once it passes.`);
+    items.push(`Earnings on ${view.earnings}, with the options market pricing a ` +
+      `${percent(view.impliedMove)} move around it.`);
   }
   for (const w of view.warnings ?? []) items.push(sentence(w));
   if (catalog) {
@@ -193,10 +207,9 @@ export function analysis(view, catalog) {
   const frag = document.createDocumentFragment();
   frag.append(verdictCard(view));
 
-  if (view.outlooks?.length) {
-    frag.append(section('Outlook',
-      el('div', { class: 'grid grid--two' },
-        view.outlooks.map((o) => outlookCard(o, view.spot)))));
+  if (view.fair) {
+    frag.append(section('What it looks worth', fairCard(view)));
+    frag.append(section('How long that might take', timingCard(view.timing)));
   }
 
   const groups = [
@@ -206,8 +219,6 @@ export function analysis(view, catalog) {
   if (groups.length) {
     frag.append(section('Why', el('div', { class: 'grid grid--two' }, groups)));
   }
-
-  frag.append(section('If you are buying calls', planCard(view.plan)));
 
   const footnotes = notes(view, catalog);
   if (footnotes) frag.append(footnotes);

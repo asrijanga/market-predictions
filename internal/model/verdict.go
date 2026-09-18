@@ -8,6 +8,7 @@ import (
 
 	"github.com/asrijanga/market-predictions/internal/pack"
 	"github.com/asrijanga/market-predictions/internal/quant"
+	"github.com/asrijanga/market-predictions/internal/valuation"
 )
 
 // Stances, ordered from most bearish to most bullish.
@@ -41,7 +42,7 @@ func (s Signal) Bullish() bool { return s.Contribution > 0 }
 // market's own pricing reveals about demand for downside. None of them are
 // derived from the simulation, so the composite can be used to set the
 // simulation's drift without reasoning in a circle.
-func Signals(p *pack.Pack, ivm IVModel) ([]Signal, float64) {
+func Signals(p *pack.Pack, ivm IVModel, v valuation.Result) ([]Signal, float64) {
 	trendAnnual := math.Expm1(p.Trend.Drift * quant.TradingDaysPerYear)
 	// A trend counts for more when the fit is clean, so R² scales the weight
 	// rather than the score.
@@ -92,6 +93,26 @@ func Signals(p *pack.Pack, ivm IVModel) ([]Signal, float64) {
 
 	if ratio := putCallRatio(p); ratio > 0 {
 		add("Put/call open interest", fmt.Sprintf("%.2f", ratio), (1-ratio)/0.5, 0.05)
+	}
+
+	// What the company earns, against what the market is charging for it.
+	// This is the only signal that looks at the business rather than at
+	// the price, so it carries the largest single weight -- but only as
+	// far as the models agreed with each other, because a fair value the
+	// models disagree about is not evidence of anything.
+	if v.FairValue > 0 && p.Price > 0 {
+		weight := 0.20
+		switch v.Confidence {
+		case "low":
+			weight = 0.08
+		case "medium":
+			weight = 0.15
+		}
+		// A quarter either way of fair value is the range within which the
+		// estimate cannot tell the two apart.
+		add("Price against fair value",
+			fmt.Sprintf("%s versus an estimated %s", money(p.Price), money(v.FairValue)),
+			v.Upside/0.25, weight)
 	}
 
 	var score, weights float64
@@ -219,3 +240,19 @@ func aboveBelowText(above bool) string {
 
 func clamp(x, lo, hi float64) float64 { return math.Max(lo, math.Min(hi, x)) }
 func clamp01(x float64) float64       { return clamp(x, 0, 1) }
+
+// TradingDayDate returns the calendar date n trading days after from,
+// counting weekdays only (exchange holidays are not modelled).
+func TradingDayDate(from time.Time, n int) time.Time {
+	d := from
+	for i := 0; i < n; i++ {
+		d = d.AddDate(0, 0, 1)
+		for d.Weekday() == time.Saturday || d.Weekday() == time.Sunday {
+			d = d.AddDate(0, 0, 1)
+		}
+	}
+	return d
+}
+
+// money renders a share price.
+func money(v float64) string { return fmt.Sprintf("$%.2f", v) }

@@ -62,11 +62,40 @@ func testPack(t *testing.T) *pack.Pack {
 	if err != nil {
 		t.Fatal(err)
 	}
+	// A company to value: earning steadily above its cost of capital, with
+	// a book value that still describes it and a multiple history to fit a
+	// reversion speed to.
+	shares := 1e9
+	eps := spot / 20 // a trailing multiple of twenty
+	quarters := make([]market.QuarterEPS, 0, 4)
+	for i := 3; i >= 0; i-- {
+		quarters = append(quarters, market.QuarterEPS{
+			End: now.AddDate(0, -3*i, -10), Reported: eps / 4,
+		})
+	}
+	funda := market.Fundamentals{
+		Symbol: "TEST", Shares: shares, MarketCap: spot * shares,
+		TrailingEPS:       eps,
+		ForwardEPS:        []float64{eps * 1.08, eps * 1.16, eps * 1.25},
+		QuarterlyEPS:      quarters,
+		BookValuePerShare: spot / 3,
+		DividendPerShare:  eps * 0.3,
+		ReturnOnEquity:    0.18,
+		NetIncome:         []float64{eps * shares},
+		Equity:            []float64{spot / 3 * shares},
+		FiscalEnds:        []string{now.Format("1/2/2006")},
+	}
+	peHistory := make([]float64, 0, len(bars))
+	for _, b := range bars {
+		peHistory = append(peHistory, b.Close/eps)
+	}
+
 	return &pack.Pack{
 		Symbol: "TEST", AsOf: now, Price: spot, Benchmark: "SPY", HorizonDays: 63,
 		Trend: trend, Bars: bars, ModelCloses: closes,
 		EarningsDate: earnings, DaysToEarnings: quant.TradingDays(now, earnings),
-		Expiries: options.Summarize(quotes, spot, now, 0.04),
+		Expiries:     options.Summarize(quotes, spot, now, 0.04),
+		Fundamentals: funda, Beta: 1.05, PEHistory: peHistory,
 	}
 }
 
@@ -93,9 +122,8 @@ func TestAnalyzeEndToEnd(t *testing.T) {
 	if r.EarningsIdx <= 0 {
 		t.Error("earnings index should be set")
 	}
-	if len(r.Contracts) == 0 || len(r.BuyNow) == 0 || len(r.VolTerm) == 0 || len(r.Dist) == 0 {
-		t.Fatalf("empty sections: contracts=%d buynow=%d volterm=%d dist=%d",
-			len(r.Contracts), len(r.BuyNow), len(r.VolTerm), len(r.Dist))
+	if len(r.VolTerm) == 0 || len(r.Dist) == 0 {
+		t.Fatalf("empty sections: volterm=%d dist=%d", len(r.VolTerm), len(r.Dist))
 	}
 	// The signal drift must stay inside the risk premium band either side
 	// of the risk-free rate, however hard the synthetic series trends.
@@ -135,56 +163,15 @@ func TestAnalyzeEndToEnd(t *testing.T) {
 			t.Error("the distribution should widen with horizon")
 		}
 	}
-	for _, s := range r.Strategies {
-		if s.Stats.PTrade < o.MinPTrade {
-			t.Errorf("plan below the fill threshold: %+v", s.Stats)
-		}
-		if len(s.DriftCurve) != len(DriftGrid) {
-			t.Errorf("missing drift sensitivity: %d points", len(s.DriftCurve))
-		}
-		if s.Window.StartIdx > s.Contract.ExpiryIdx-minRunway {
-			t.Error("plan entered inside the runway")
-		}
+	if r.FairValue <= 0 {
+		t.Fatalf("no fair value produced: %v", r.Warnings)
 	}
-}
-
-func TestDriftCurveIsMonotonicForALongCall(t *testing.T) {
-	p := testPack(t)
-	o := Defaults()
-	o.Paths = 4000
-	r, err := Analyze(p, o)
-	if err != nil {
-		t.Fatal(err)
+	if math.Abs(r.Upside-(r.FairValue/r.Spot-1)) > 1e-9 {
+		t.Errorf("upside %.4f does not match fair value %.2f against spot %.2f",
+			r.Upside, r.FairValue, r.Spot)
 	}
-	if len(r.BuyNow) == 0 {
-		t.Fatal("no contracts")
-	}
-	curve := r.BuyNow[0].DriftCurve
-	// A long call is worth more the faster the stock is assumed to compound;
-	// the simulated curve should rise across the grid.
-	if curve[0] >= curve[len(curve)-1] {
-		t.Errorf("drift curve should rise with drift: %v", curve)
-	}
-}
-
-func TestAnalyzeRiskNeutralDriftIsWorseThanTrend(t *testing.T) {
-	p := testPack(t)
-	base, rn := Defaults(), Defaults()
-	base.Paths, rn.Paths = 4000, 4000
-	rn.DriftMode = DriftRiskNeutral
-	a, err := Analyze(p, base)
-	if err != nil {
-		t.Fatal(err)
-	}
-	b, err := Analyze(p, rn)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if b.AnnualDrift >= a.AnnualDrift {
-		t.Errorf("risk-neutral drift %.3f should be below the capped trend %.3f", b.AnnualDrift, a.AnnualDrift)
-	}
-	if a.BuyNow[0].Stats.MeanReturn <= b.BuyNow[0].Stats.MeanReturn {
-		t.Error("the same call should be worth less under a risk-neutral drift")
+	if len(r.Valuation.Estimates) == 0 {
+		t.Error("the fair value came from no model")
 	}
 }
 
@@ -199,8 +186,8 @@ func TestRenderSummaryAnswersTheQuestion(t *testing.T) {
 	md := Render(r)
 	for _, want := range []string{
 		"# TEST is ", "## Direction", "Next quarter", "Next year",
-		"## Why ", "## What argues against it", "## If you are buying calls",
-		"## How much to trust this",
+		"## Why ", "## What argues against it", "## What it looks worth",
+		"## How long it might take", "## How much to trust this",
 	} {
 		if !strings.Contains(md, want) {
 			t.Errorf("summary is missing %q", want)
@@ -227,7 +214,6 @@ func TestRenderDetailKeepsTheEvidence(t *testing.T) {
 	for _, want := range []string{
 		"# TEST model detail", "## Signal detail", "## Volatility model", "GARCH(1,1)",
 		"## Implied volatility surface", "## Simulated price distribution",
-		"## Contract screen", "## Ranked entry windows", "### Drift sensitivity",
 		"## Method and limitations",
 	} {
 		if !strings.Contains(md, want) {
@@ -241,82 +227,5 @@ func assertNoFormatErrors(t *testing.T, md string) {
 	t.Helper()
 	if strings.Contains(md, "MISSING") || strings.Contains(md, "%!") {
 		t.Error("report contains a formatting error")
-	}
-}
-
-func TestBreakEvenTextHandlesOutOfRange(t *testing.T) {
-	if got := breakEvenText(BreakEven(math.Inf(1))); !strings.Contains(got, "above") {
-		t.Errorf("got %q", got)
-	}
-	if got := breakEvenText(BreakEven(math.Inf(-1))); !strings.Contains(got, "below") {
-		t.Errorf("got %q", got)
-	}
-	if got := breakEvenText(BreakEven(0.075)); got != "+7.5%/yr" {
-		t.Errorf("got %q", got)
-	}
-}
-
-func TestAnalyzeCoversEveryTradableExpiry(t *testing.T) {
-	p := testPack(t)
-	// Blank the at-the-money volatility on the furthest monthly expiry, as
-	// happens when the quotes there will not solve. Its strikes are still
-	// liquid, so contracts are still drawn from it.
-	last := &p.Expiries[len(p.Expiries)-1]
-	furthest := last.Days
-	last.ATMCallIV = 0
-
-	o := Defaults()
-	o.Paths = 2000
-	r, err := Analyze(p, o)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if r.Horizon < furthest {
-		t.Fatalf("horizon %d does not reach the furthest tradable expiry %d", r.Horizon, furthest)
-	}
-	for _, c := range r.Contracts {
-		if c.ExpiryIdx > r.Horizon {
-			t.Errorf("contract expiring at %d is past the horizon %d", c.ExpiryIdx, r.Horizon)
-		}
-	}
-	// Every reported plan must carry a full sensitivity curve, which is
-	// what indexes the shorter simulations.
-	for _, s := range r.Strategies {
-		if len(s.DriftCurve) != len(DriftGrid) {
-			t.Errorf("plan missing its drift curve: %d points", len(s.DriftCurve))
-		}
-	}
-}
-
-// A chain with nothing liquid enough to trade costs the reader the entry
-// plan, not the whole analysis: the verdict is built from prices well
-// before contracts are screened, and dropping it would leave large caps
-// with wide option markets looking like unknown tickers.
-func TestAnalyzeKeepsTheVerdictWithoutTradableContracts(t *testing.T) {
-	p := testPack(t)
-	o := Defaults()
-	o.Paths = 4000
-	o.MinOI = 1 << 30 // no listed contract can clear this
-
-	r, err := Analyze(p, o)
-	if err != nil {
-		t.Fatalf("Analyze failed instead of reporting an empty screen: %v", err)
-	}
-	if len(r.Contracts) != 0 || len(r.Strategies) != 0 {
-		t.Fatalf("expected an empty screen, got %d contracts and %d strategies",
-			len(r.Contracts), len(r.Strategies))
-	}
-	if r.Stance == "" || len(r.Outlooks) == 0 || len(r.Signals) == 0 {
-		t.Errorf("verdict is incomplete: stance=%q outlooks=%d signals=%d",
-			r.Stance, len(r.Outlooks), len(r.Signals))
-	}
-	var noted bool
-	for _, w := range r.Warnings {
-		if strings.Contains(w, "liquidity filters") {
-			noted = true
-		}
-	}
-	if !noted {
-		t.Errorf("the empty screen is not explained in the warnings: %v", r.Warnings)
 	}
 }

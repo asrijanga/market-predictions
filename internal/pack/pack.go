@@ -7,6 +7,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"math"
 	"os"
 	"path/filepath"
 	"sort"
@@ -64,7 +65,14 @@ type Pack struct {
 	Filings        []market.Filing         `json:"filings"`
 	Headlines      []market.Headline       `json:"headlines"`
 	Expiries       []options.ExpirySummary `json:"expiries"`
-	Events         []Event                 `json:"events"`
+
+	// Fundamentals is what the company reports; Beta is measured against
+	// the benchmark; PEHistory is the trailing multiple through the
+	// display window, which is what a reversion speed is fitted to.
+	Fundamentals market.Fundamentals `json:"fundamentals"`
+	Beta         float64             `json:"beta"`
+	PEHistory    []float64           `json:"pe_history,omitempty"`
+	Events       []Event             `json:"events"`
 
 	Warnings []string `json:"warnings,omitempty"`
 }
@@ -104,6 +112,7 @@ func Build(ctx context.Context, src Sources, symbol string, o Options) (*Pack, e
 		chain       []market.OptionQuote
 		heads       []market.Headline
 		filings     []market.Filing
+		funda       market.Fundamentals
 		errs        map[string]error
 	}
 	r := result{errs: map[string]error{}}
@@ -117,6 +126,12 @@ func Build(ctx context.Context, src Sources, symbol string, o Options) (*Pack, e
 		{"earnings", func() (err error) { r.earnings, err = src.Nasdaq.EarningsDate(ctx, symbol, now); return }},
 		{"options", func() (err error) {
 			r.chain, err = src.Nasdaq.OptionChain(ctx, symbol, now, now.AddDate(0, 0, o.HorizonDays*7/5+45))
+			return
+		}},
+		// The price is not known yet, so shares outstanding is filled in
+		// below once it is.
+		{"fundamentals", func() (err error) {
+			r.funda, err = src.Nasdaq.Fundamentals(ctx, symbol, 0, now)
 			return
 		}},
 	}
@@ -161,7 +176,7 @@ func Build(ctx context.Context, src Sources, symbol string, o Options) (*Pack, e
 			return nil, fmt.Errorf("%s: %w", must, err)
 		}
 	}
-	for _, name := range []string{"earnings", "options", "news", "filings"} {
+	for _, name := range []string{"earnings", "options", "news", "filings", "fundamentals"} {
 		if err := r.errs[name]; err != nil {
 			p.Warnings = append(p.Warnings, name+": "+err.Error())
 		}
@@ -173,6 +188,10 @@ func Build(ctx context.Context, src Sources, symbol string, o Options) (*Pack, e
 		r.bars = r.bars[len(r.bars)-fetchDays:]
 	}
 	p.ModelCloses = quant.Closes(r.bars)
+	// The multiple's history is fitted over the whole estimation sample,
+	// not the display window: a single year of it is mostly the price
+	// wandering, and the reversion speed needs several earnings cycles.
+	fullBars := append([]market.Bar(nil), r.bars...)
 	if len(r.bars) > o.LookbackDays {
 		r.bars = r.bars[len(r.bars)-o.LookbackDays:]
 	}
@@ -192,6 +211,18 @@ func Build(ctx context.Context, src Sources, symbol string, o Options) (*Pack, e
 	}
 	p.Trend = trend
 	p.Year = yearStats(r.bars, r.bench)
+
+	// Fundamentals arrive without a price, so the per-share conversions
+	// are finished here.
+	p.Fundamentals = r.funda
+	if p.Price > 0 && p.Fundamentals.MarketCap > 0 {
+		p.Fundamentals.Shares = p.Fundamentals.MarketCap / p.Price
+		if len(p.Fundamentals.Equity) > 0 && p.Fundamentals.Shares > 0 {
+			p.Fundamentals.BookValuePerShare = p.Fundamentals.Equity[0] / p.Fundamentals.Shares
+		}
+	}
+	p.Beta = beta(r.bars, r.bench)
+	p.PEHistory = peHistory(fullBars, p.Fundamentals)
 
 	if !r.earnings.IsZero() {
 		p.EarningsDate = r.earnings
@@ -309,4 +340,124 @@ func Write(dir string, p *Pack) (string, error) {
 		return "", err
 	}
 	return out, nil
+}
+
+// beta measures how much of the benchmark's movement this stock carries:
+// the slope of its daily returns regressed on the benchmark's. It is what
+// turns a market risk premium into this company's cost of equity.
+//
+// The two series are matched by date rather than by position, because a
+// halt or a listing difference leaves them different lengths and pairing
+// by index would silently compare different days.
+func beta(bars, bench []market.Bar) float64 {
+	byDay := make(map[string]float64, len(bench))
+	for _, b := range bench {
+		byDay[b.Date.Format(time.DateOnly)] = b.Close
+	}
+	var xs, ys []float64
+	var prevStock, prevBench float64
+	for _, b := range bars {
+		m, ok := byDay[b.Date.Format(time.DateOnly)]
+		if !ok || b.Close <= 0 || m <= 0 {
+			continue
+		}
+		if prevStock > 0 && prevBench > 0 {
+			xs = append(xs, math.Log(m/prevBench))
+			ys = append(ys, math.Log(b.Close/prevStock))
+		}
+		prevStock, prevBench = b.Close, m
+	}
+	if len(xs) < 60 {
+		return 1
+	}
+	var mx, my float64
+	for i := range xs {
+		mx += xs[i]
+		my += ys[i]
+	}
+	mx /= float64(len(xs))
+	my /= float64(len(ys))
+	var cov, varx float64
+	for i := range xs {
+		dx := xs[i] - mx
+		cov += dx * (ys[i] - my)
+		varx += dx * dx
+	}
+	if varx == 0 {
+		return 1
+	}
+	b := cov / varx
+	// A beta outside this range is an artefact of a short or illiquid
+	// sample rather than a measurement of risk.
+	return math.Min(3, math.Max(0.2, b))
+}
+
+// peHistory rebuilds what the trailing multiple was on each day of the
+// sample.
+//
+// Earnings are known only four times a year, and only once reported, so
+// the figure for a given day is the four quarters ending on or before it.
+// Using today's earnings for the whole history would put information into
+// the past that nobody had, and would flatten the very variation a
+// reversion speed is read from.
+//
+// The reported quarters reach back about a year. Before that the annual
+// statements still give earnings per share -- net income over shares --
+// which is coarser but extends the sample to the three years the fit
+// wants. A one-year window would otherwise be measuring price wandering
+// around its own mean rather than a multiple returning to its level.
+func peHistory(bars []market.Bar, f market.Fundamentals) []float64 {
+	type point struct {
+		end time.Time
+		eps float64
+	}
+	var ttm []point
+
+	if len(f.QuarterlyEPS) >= 4 {
+		sorted := append([]market.QuarterEPS(nil), f.QuarterlyEPS...)
+		sort.Slice(sorted, func(i, j int) bool { return sorted[i].End.Before(sorted[j].End) })
+		for i := 3; i < len(sorted); i++ {
+			var sum float64
+			for j := i - 3; j <= i; j++ {
+				sum += sorted[j].Reported
+			}
+			ttm = append(ttm, point{sorted[i].End, sum})
+		}
+	}
+	if f.Shares > 0 {
+		for i, income := range f.NetIncome {
+			if i >= len(f.FiscalEnds) || income == 0 {
+				continue
+			}
+			end, err := time.Parse("1/2/2006", f.FiscalEnds[i])
+			if err != nil {
+				continue
+			}
+			// Only reach back beyond what the quarters already cover.
+			if len(ttm) > 0 && !end.Before(ttm[0].end) {
+				continue
+			}
+			ttm = append(ttm, point{end, income / f.Shares})
+		}
+	}
+	if len(ttm) == 0 {
+		return nil
+	}
+	sort.Slice(ttm, func(i, j int) bool { return ttm[i].end.Before(ttm[j].end) })
+
+	out := make([]float64, 0, len(bars))
+	for _, b := range bars {
+		eps := 0.0
+		for i := len(ttm) - 1; i >= 0; i-- {
+			if !ttm[i].end.After(b.Date) {
+				eps = ttm[i].eps
+				break
+			}
+		}
+		if eps <= 0 || b.Close <= 0 {
+			continue
+		}
+		out = append(out, b.Close/eps)
+	}
+	return out
 }

@@ -5,14 +5,15 @@
 > The numbers it prints come from a toy model over public data, and nothing
 > it says should be acted on with real money. Treat it as a curiosity.
 
-`mktpredict` is a Go command-line tool for finding and timing call-option
-trades on US stocks, with a browser front end. Six commands:
+`mktpredict` is a Go command-line tool that answers one question about a US
+stock -- what it looks worth, against what it costs -- with a browser front
+end. Six commands:
 
 | Command | What it does |
 | --- | --- |
 | `scan` | Ranks the largest liquid US stocks as call candidates from six months of price history. |
 | `pack SYMBOL` | Builds a one-year data pack for one stock: prices, trend statistics, the live option chain with implied volatility, earnings date, SEC filings and headlines. |
-| `analyze SYMBOL` | Runs the statistical model over that pack and answers whether the stock is bullish or bearish and why, where it is likely to be next quarter and next year, and when to buy calls. |
+| `analyze SYMBOL` | Runs the models over that pack and answers whether the stock is bullish or bearish and why, what it looks worth on what the company reports, and how long the gap to that has historically taken to close. |
 | `serve` | Serves the same analysis to a browser front end: a terminal-styled page that takes one ticker at a time. |
 | `build-site` | Renders that front end plus precomputed analyses into a directory any static host can serve, which is how it goes on GitHub Pages. |
 | `cache` | Reports on, or prunes, the DuckDB database of computed analyses. |
@@ -296,6 +297,65 @@ The front end is four files — `index.html`, `style.css`, `app.js` and
 `report.js` — embedded in the binary with `go:embed`. There is no framework,
 no build step, no package manager and nothing fetched from a third party at
 runtime.
+
+## What it looks worth
+
+Three models run and the answers are blended, rather than one being picked.
+
+* **Residual income** (Edwards-Bell-Ohlson). A share is worth its book value
+  plus whatever the company earns above the cost of that capital,
+  discounted. Penman and Sougiannis (1998) and Francis, Olsson and Oswald
+  (2000) both found it more accurate than discounted cash flow or dividend
+  discounting over the finite horizons anyone actually forecasts over,
+  because book value carries most of the answer and the forecast carries
+  less of it.
+* **The multiple these shares have actually traded on.** The median trailing
+  price-to-earnings over three years, against current earnings. It needs no
+  growth assumption at all, which is why it replaced a Gordon-derived
+  justified multiple: that formula divides by (r - g), so for any company
+  growing near its cost of capital the denominator collapses and the answer
+  runs away. It silently refused to value exactly the companies it was most
+  needed for.
+* **Discounted consensus earnings.** The analysts' estimates for as far as
+  they reach, then a terminal value. The most forecast-dependent of the
+  three, so it carries the least weight.
+
+Two things decide how much each is trusted. Residual income is anchored on
+book value, and that anchor fails when book value has stopped describing the
+business: years of buybacks and expensed intangibles leave companies whose
+equity is a rounding error against their market value. Apple trades near
+sixty times its book, where residual income put its fair value above six
+hundred dollars on a book value of five -- an artefact, not a valuation. The
+weight therefore fades as price-to-book rises and is gone by fifteen times.
+Second, the spread between the surviving estimates is reported as a
+confidence, because averaging three numbers that disagree by a factor of
+three produces a figure with a decimal point and no information.
+
+The discount rate is CAPM: the risk-free rate plus this company's beta
+against the benchmark, times an equity risk premium of five percent, and
+clamped so that a beta measured from a short or illiquid sample cannot
+produce a discount rate below the risk-free rate.
+
+## How long the gap takes to close
+
+The gap is what reverts, not the price. The trailing multiple is modelled as
+an Ornstein-Uhlenbeck process in logs,
+
+	dx = k(m - x)dt + s dW
+
+which discretises so that regressing the change on the level recovers k
+directly: the slope is -k*dt. That gives a half-life of ln2/k. The page then
+simulates the gap forward and reports the median time to first reach fair
+value, because a slowly reverting process has paths that never arrive and an
+expectation dragged to infinity by them.
+
+A stock whose multiple wanders without returning gives a slope at or above
+zero. That is not slow reversion but absent reversion, and it is reported as
+no estimate rather than as a very large number. The multiple's history is
+built from the reported quarters where they reach and from annual earnings
+before that, using only what was known on each day -- applying today's
+earnings to the whole history would put information into the past nobody had
+and flatten the variation the fit is reading.
 
 ## Running it as a service
 
