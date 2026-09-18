@@ -45,6 +45,7 @@ CREATE TABLE IF NOT EXISTS analyses (
 	computed_at   TIMESTAMP NOT NULL,
 	compute_ms    BIGINT    NOT NULL,
 	payload       JSON      NOT NULL,
+	last_used     TIMESTAMP NOT NULL DEFAULT now(),
 	PRIMARY KEY (symbol, as_of, paths, seed, model_version)
 );
 CREATE TABLE IF NOT EXISTS requests (
@@ -155,23 +156,86 @@ func (s *Store) Close() error {
 }
 
 // Get returns the stored analysis for key, if one is present.
-func (s *Store) Get(ctx context.Context, key Key) (json.RawMessage, bool, error) {
+// Get returns a stored analysis. An entry older than maxAge is reported as
+// a miss and left for eviction to collect; a maxAge of zero or less accepts
+// an entry of any age, which is what a batch build wants.
+//
+// A hit also stamps last_used, so eviction can be least-recently-used. The
+// stamp is a second statement rather than a returning-update because DuckDB
+// takes a single writer and the read is the common path.
+func (s *Store) Get(ctx context.Context, key Key, maxAge time.Duration) (json.RawMessage, bool, error) {
 	if s == nil {
 		return nil, false, nil
 	}
-	var body string
+	var (
+		body     string
+		computed time.Time
+	)
 	err := s.db.QueryRowContext(ctx, `
-		SELECT payload::TEXT FROM analyses
+		SELECT payload::TEXT, computed_at FROM analyses
 		WHERE symbol = ? AND as_of = ? AND paths = ? AND seed = ? AND model_version = ?`,
 		key.Symbol, key.AsOf.Format(time.DateOnly), key.Paths, int64(key.Seed), key.ModelVersion,
-	).Scan(&body)
+	).Scan(&body, &computed)
 	if err == sql.ErrNoRows {
 		return nil, false, nil
 	}
 	if err != nil {
 		return nil, false, fmt.Errorf("store: get %s: %w", key.Symbol, err)
 	}
+	if maxAge > 0 && time.Since(computed.UTC()) > maxAge {
+		return nil, false, nil
+	}
+	if _, err := s.db.ExecContext(ctx, `
+		UPDATE analyses SET last_used = ?
+		WHERE symbol = ? AND as_of = ? AND paths = ? AND seed = ? AND model_version = ?`,
+		time.Now().UTC(),
+		key.Symbol, key.AsOf.Format(time.DateOnly), key.Paths, int64(key.Seed), key.ModelVersion,
+	); err != nil {
+		// Losing the stamp costs eviction accuracy, not the answer.
+		return json.RawMessage(body), true, nil
+	}
 	return json.RawMessage(body), true, nil
+}
+
+// Has reports whether a usable analysis is stored, without reading the
+// payload. A caller deciding whether work is about to happen wants the
+// question answered cheaply, and this is a primary-key lookup.
+func (s *Store) Has(ctx context.Context, key Key, maxAge time.Duration) (bool, error) {
+	if s == nil {
+		return false, nil
+	}
+	var computed time.Time
+	err := s.db.QueryRowContext(ctx, `
+		SELECT computed_at FROM analyses
+		WHERE symbol = ? AND as_of = ? AND paths = ? AND seed = ? AND model_version = ?`,
+		key.Symbol, key.AsOf.Format(time.DateOnly), key.Paths, int64(key.Seed), key.ModelVersion,
+	).Scan(&computed)
+	if err == sql.ErrNoRows {
+		return false, nil
+	}
+	if err != nil {
+		return false, fmt.Errorf("store: has %s: %w", key.Symbol, err)
+	}
+	return maxAge <= 0 || time.Since(computed.UTC()) <= maxAge, nil
+}
+
+// Evict drops the least recently used analyses until at most keep remain.
+//
+// The database is the only thing on the volume that grows without a natural
+// bound: a public server will be asked about symbols nobody asks about
+// twice, and every one of those is a row forever otherwise.
+func (s *Store) Evict(ctx context.Context, keep int) (int64, error) {
+	if s == nil || keep <= 0 {
+		return 0, nil
+	}
+	res, err := s.db.ExecContext(ctx, `
+		DELETE FROM analyses WHERE rowid NOT IN (
+			SELECT rowid FROM analyses ORDER BY last_used DESC LIMIT ?
+		)`, keep)
+	if err != nil {
+		return 0, fmt.Errorf("store: evict: %w", err)
+	}
+	return res.RowsAffected()
 }
 
 // Put stores an analysis, replacing any earlier result for the same key.
@@ -181,10 +245,10 @@ func (s *Store) Put(ctx context.Context, key Key, view json.RawMessage, compute 
 	}
 	_, err := s.db.ExecContext(ctx, `
 		INSERT OR REPLACE INTO analyses
-			(symbol, as_of, paths, seed, model_version, computed_at, compute_ms, payload)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+			(symbol, as_of, paths, seed, model_version, computed_at, compute_ms, payload, last_used)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		key.Symbol, key.AsOf.Format(time.DateOnly), key.Paths, int64(key.Seed), key.ModelVersion,
-		time.Now().UTC(), compute.Milliseconds(), string(view),
+		time.Now().UTC(), compute.Milliseconds(), string(view), time.Now().UTC(),
 	)
 	if err != nil {
 		return fmt.Errorf("store: put %s: %w", key.Symbol, err)

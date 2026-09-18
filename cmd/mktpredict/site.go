@@ -79,8 +79,29 @@ func buildSiteCommand(ctx context.Context, args []string, out io.Writer) error {
 	dbPath := fs.String("db", defaultDBPath(), "DuckDB file holding computed analyses; empty disables it")
 	refresh := fs.Bool("refresh", false, "recompute every symbol even when the database already has today's answer")
 	timeout := fs.Duration("timeout", 20*time.Minute, "overall timeout")
+	api := fs.String("api", "", "base URL of a server that computes on demand; with it, the site ships the front end alone and analyses nothing")
 	if err := fs.Parse(args); err != nil {
 		return err
+	}
+
+	// With a server to talk to there is nothing to precompute: write the
+	// front end and a pointer to the API, and the page asks for a symbol
+	// when a reader does. This is the difference between a deploy that
+	// takes ten minutes and one that takes ten seconds.
+	if *api != "" {
+		if err := web.WriteStatic(*dir); err != nil {
+			return fmt.Errorf("copy front end: %w", err)
+		}
+		if err := web.WriteConfig(*dir, *api); err != nil {
+			return err
+		}
+		// Pages runs the output through Jekyll otherwise, which skips
+		// files and directories beginning with an underscore.
+		if err := os.WriteFile(filepath.Join(*dir, ".nojekyll"), nil, 0o644); err != nil {
+			return err
+		}
+		fmt.Fprintf(out, "wrote the front end to %s, computing against %s\n", *dir, *api)
+		return nil
 	}
 	ctx, cancel := context.WithTimeout(ctx, *timeout)
 	defer cancel()
@@ -143,7 +164,9 @@ func buildSiteCommand(ctx context.Context, args []string, out io.Writer) error {
 				cached bool
 			)
 			if !*refresh {
-				if stored, ok, err := db.Get(ctx, key); err != nil {
+				// A batch build takes today's answer at any age: it is
+				// filling a file, not serving a reader.
+				if stored, ok, err := db.Get(ctx, key, 0); err != nil {
 					log.Printf("cache read %s: %v", symbol, err)
 				} else if ok {
 					var v web.View

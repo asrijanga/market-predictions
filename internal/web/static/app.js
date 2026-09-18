@@ -14,7 +14,8 @@ const meta = document.getElementById('catalog-meta');
 const result = document.getElementById('result');
 
 const state = {
-  catalog: null,   // null means a live server is answering
+  catalog: null,   // null means a server computes on demand
+  api: '',         // base URL of that server; empty means same origin
   matches: [],
   active: -1,
   stream: null,
@@ -25,6 +26,21 @@ const SYMBOL = /^[A-Z][A-Z.\-]{0,5}$/;
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
 // ------------------------------------------------------------- the catalog
+
+// loadConfig finds the server that computes. A published site is served
+// from a static host that cannot run the model, so it carries the address
+// of one that can; served by that server itself, there is no config and
+// same-origin is right.
+async function loadConfig() {
+  try {
+    const res = await fetch('./config.json', { cache: 'no-cache' });
+    if (!res.ok) return '';
+    const cfg = await res.json();
+    return typeof cfg.api === 'string' ? cfg.api.replace(/\/$/, '') : '';
+  } catch {
+    return '';
+  }
+}
 
 async function loadCatalog() {
   try {
@@ -224,7 +240,7 @@ async function runPublished(symbol, progress) {
 }
 
 function runLive(symbol, progress) {
-  const stream = new EventSource(`/api/analyze?symbol=${encodeURIComponent(symbol)}`);
+  const stream = new EventSource(`${state.api}/api/analyze?symbol=${encodeURIComponent(symbol)}`);
   state.stream = stream;
 
   stream.addEventListener('stage', (e) => {
@@ -259,7 +275,10 @@ addEventListener('popstate', () => {
 });
 
 (async () => {
-  state.catalog = await loadCatalog();
+  // A site that names a server computes on demand and ships no catalog,
+  // so asking for one would only log a 404 on every visit.
+  state.api = await loadConfig();
+  state.catalog = state.api ? null : await loadCatalog();
   describeCatalog();
   const deep = new URLSearchParams(location.search).get('s');
   if (deep) {
