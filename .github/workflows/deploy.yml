@@ -1,0 +1,79 @@
+# Deploys the analysis server to Fly.
+#
+# This is deliberately separate from the Pages workflow. Publishing the
+# static site bakes answers in at build time; this deploys the code that
+# computes them on demand, so the two are not on the same schedule and a
+# recalculation never needs a deploy.
+name: Deploy server
+
+on:
+  push:
+    branches: [main]
+    # Only the things that change what the server does. A front-end-only
+    # change still ships, because the binary embeds the front end.
+    paths:
+      - 'cmd/**'
+      - 'internal/**'
+      - 'go.mod'
+      - 'go.sum'
+      - 'Dockerfile'
+      - 'fly.toml'
+      - '.github/workflows/deploy.yml'
+  workflow_dispatch:
+
+concurrency:
+  group: fly-deploy
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # Without a token there is nothing to deploy to, and that is a
+      # configuration gap rather than a broken build: say so and stop,
+      # the way the Pages workflow handles Pages not being enabled.
+      - name: Is Fly configured?
+        id: fly
+        env:
+          TOKEN: ${{ secrets.FLY_API_TOKEN }}
+        run: |
+          if [ -n "$TOKEN" ]; then
+            echo "ready=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "ready=false" >> "$GITHUB_OUTPUT"
+            echo "::warning::FLY_API_TOKEN is not set, so nothing was deployed. Add it under Settings -> Secrets and variables -> Actions."
+          fi
+
+      - uses: superfly/flyctl-actions/setup-flyctl@master
+        if: steps.fly.outputs.ready == 'true'
+
+      - name: Deploy
+        if: steps.fly.outputs.ready == 'true'
+        env:
+          FLY_API_TOKEN: ${{ secrets.FLY_API_TOKEN }}
+        run: flyctl deploy --remote-only --wait-timeout 10m
+
+      # A deploy that reports success while serving errors is worse than a
+      # failed one, so prove the running machine answers before finishing.
+      - name: Check it is serving
+        if: steps.fly.outputs.ready == 'true'
+        env:
+          FLY_API_TOKEN: ${{ secrets.FLY_API_TOKEN }}
+        run: |
+          app=$(python3 -c "import tomllib; print(tomllib.load(open('fly.toml','rb'))['app'])")
+          url="https://$app.fly.dev"
+          echo "checking $url"
+          for attempt in 1 2 3 4 5 6; do
+            code=$(curl -s -o /dev/null -w '%{http_code}' --max-time 60 "$url/" || echo 000)
+            if [ "$code" = "200" ]; then
+              echo "::notice::$url is serving (HTTP 200)."
+              exit 0
+            fi
+            echo "attempt $attempt: HTTP $code, waiting for the machine to start"
+            sleep 10
+          done
+          echo "::error::$url did not return 200. Recent logs:"
+          flyctl logs --no-tail | tail -50
+          exit 1

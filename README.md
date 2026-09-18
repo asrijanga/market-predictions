@@ -297,6 +297,36 @@ The front end is four files — `index.html`, `style.css`, `app.js` and
 no build step, no package manager and nothing fetched from a third party at
 runtime.
 
+## Running it as a service
+
+The published site bakes its answers in at build time, so new numbers need
+a new build. Running the server instead makes a recalculation a request:
+the first call for a symbol each day computes it, and everything after that
+comes back from the database in milliseconds.
+
+`fly.toml` and `.github/workflows/deploy.yml` deploy `serve` to Fly. Set a
+`FLY_API_TOKEN` repository secret (`fly tokens create deploy`) and the
+workflow ships on every push that touches the server, or on demand from the
+Actions tab. Without the secret it warns and skips rather than failing, and
+after a deploy it polls the public URL until it answers before reporting
+success.
+
+Two constraints shape the machine definition, and both are worth keeping in
+mind before changing it:
+
+* **One machine, not several.** DuckDB takes a single writer and no readers
+  beside it, so a second instance pointed at the same volume fails to open
+  the database. The app scales up, not out.
+* **Memory follows concurrency.** One analysis peaks around 300MB, so the
+  1GB machine runs `-max-concurrent 2`. Raise the two together or the
+  fourth simultaneous request meets the OOM killer.
+
+The volume also carries the HTTP response cache (`XDG_CACHE_HOME=/data`),
+which matters more than its size suggests: Nasdaq rate-limits by IP and
+treats datacentre ranges less kindly than residential ones, so losing the
+cache on each deploy would mean refetching a year of bars and a full option
+chain for every symbol.
+
 ## Caching computed analyses
 
 An analysis costs a data fetch plus a few seconds of simulation, and the
