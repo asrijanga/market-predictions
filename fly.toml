@@ -1,0 +1,52 @@
+# Runs the analysis as a service, so a recalculation is a request rather
+# than a deployment.
+#
+# The published GitHub Pages site bakes its answers in at build time, which
+# means new numbers need a new deploy. Here the model runs on demand: the
+# first request for a symbol each day computes it, and every request after
+# that comes back from the DuckDB cache on the volume in milliseconds.
+
+app = 'market-predictions'
+primary_region = 'iad'          # close to the Nasdaq endpoints
+
+[build]
+  dockerfile = 'Dockerfile'
+
+[http_service]
+  internal_port = 8080
+  force_https = true
+  processes = ['app']
+  # Scale to zero between visits. A cold request pays the machine start
+  # plus one analysis; a warm one is served from the cache.
+  auto_stop_machines = 'stop'
+  auto_start_machines = true
+  min_machines_running = 0
+
+  # The analysis streams its stages over server-sent events, so a request
+  # is held open for several seconds. Drain rather than cut it off.
+  [http_service.concurrency]
+    type = 'requests'
+    soft_limit = 4
+    hard_limit = 8
+
+  [[http_service.checks]]
+    grace_period = '10s'
+    interval = '30s'
+    method = 'GET'
+    timeout = '5s'
+    path = '/'
+
+# DuckDB takes a single writer and no readers beside it, so this app runs
+# as exactly one machine with one volume. Do not scale it out.
+[mounts]
+  source = 'mktdata'
+  destination = '/data'
+
+[[vm]]
+  size = 'shared-cpu-1x'
+  memory = '1gb'
+
+# One analysis peaks around 300MB, so two at once fits 1GB with headroom.
+# Raise both together if you move to a larger machine.
+[processes]
+  app = 'mktpredict serve -addr 0.0.0.0:8080 -max-concurrent 2'
