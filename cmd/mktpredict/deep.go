@@ -163,8 +163,9 @@ func packCommand(ctx context.Context, args []string, out io.Writer, analyze bool
 		return err
 	}
 	if cfg.verbose {
-		log.Printf("model: score %+.2f (%s), GARCH persistence %.3f, base vol %.0f%%, implied earnings move %.1f%%, %d contracts, %s",
-			res.Score, res.Stance, res.GARCH.Persistence(), 100*res.IV.BaseVol, 100*res.ImpliedMove, len(res.Contracts), res.Elapsed)
+		log.Printf("model: score %+.2f (%s), GARCH persistence %.3f, base vol %.0f%%, fair value %.2f (%+.0f%%), %s",
+			res.Score, res.Stance, res.GARCH.Persistence(), 100*res.IV.BaseVol,
+			res.FairValue, 100*res.Upside, res.Elapsed)
 	}
 	reportMD := model.Render(res)
 	if cfg.detail {

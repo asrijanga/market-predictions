@@ -14,7 +14,6 @@ func Render(r *Result) string {
 	var b strings.Builder
 	w := func(format string, a ...any) { fmt.Fprintf(&b, format+"\n", a...) }
 	d := func(t time.Time) string { return t.Format("2006-01-02") }
-	pct := func(x float64) string { return fmt.Sprintf("%+.1f%%", 100*x) }
 
 	w("# %s is %s", r.Symbol, strings.ToUpper(r.Stance))
 	w("")
@@ -61,36 +60,43 @@ func Render(r *Result) string {
 	}
 
 	w("")
-	w("## If you are buying calls")
+	w("## What it looks worth")
 	w("")
-	if len(r.Strategies) == 0 {
-		w("No entry plan clears the filters: nothing fills often enough to be worth naming.")
+	v := r.Valuation
+	if r.FairValue <= 0 {
+		w("Not enough of what this company reports is published to value it on its earnings.")
 	} else {
-		best := r.Strategies[0]
-		w("%s between %s and %s, then buy the %s %g call.",
-			capitalise(triggerText(best.Trigger, r.Spot)), d(best.Window.Start), d(best.Window.End),
-			d(best.Contract.Expiry), best.Contract.Strike)
+		w("**Fair value %s** against a price of %s, a gap of %s.",
+			dollars(r.FairValue), dollars(r.Spot), pct(r.Upside))
 		w("")
-		w("- Fills on %.0f%% of paths; expected return %s when it does, with a %.0f%% chance of finishing above the entry cost.",
-			100*best.Stats.PTrade, pct(best.Stats.MeanReturn), 100*best.Stats.PProfit)
-		if now, ok := buyNowStats(r, best.Contract); ok {
-			delta := best.Stats.MeanReturn - now.MeanReturn
-			if delta >= 0 {
-				w("- Buying that contract today instead returns %s, so waiting for the trigger is worth %s.", pct(now.MeanReturn), pct(delta))
-			} else {
-				w("- Buying that contract today returns more on average, %s against %s, but wins less often, %.0f%% against %.0f%%. The plan is ranked on growth of capital, which prefers the higher win rate.",
-					pct(now.MeanReturn), pct(best.Stats.MeanReturn), 100*now.PProfit, 100*best.Stats.PProfit)
-			}
+		w("| Model | Value | Weight | What it reads |")
+		w("|---|---|---|---|")
+		for _, e := range v.Estimates {
+			w("| %s | %s | %.0f%% | %s |", capitalise(e.Method), dollars(e.Value), 100*e.Weight, e.Note)
 		}
-		w("- It breaks even if %s compounds at %s, against the %+.1f%%/yr this forecast assumes.",
-			r.Symbol, breakEvenText(best.BreakEvenDrift), 100*r.AnnualDrift)
-		if r.EarningsIdx > 0 && r.IV.Fitted && r.IV.JumpStdev > 0 {
-			w("- Earnings on %s carry an implied move of ±%.1f%%, and about %.0f%% of at-the-money implied volatility disappears once the report is out.",
-				d(r.EarningsDate), 100*r.ImpliedMove, 100*r.IV.CrushPct(21))
+		w("")
+		w("- Discounted at %.1f%%, being the risk-free rate plus this company's share of market risk, and growing at %.1f%% a year.",
+			100*v.DiscountRate, 100*v.Growth)
+		if v.TrailingPE > 0 {
+			w("- Trading on %.1f times trailing earnings and %.1f times next year's.", v.TrailingPE, v.ForwardPE)
 		}
+		w("- The models agree %s: they span %.0f%% of the blended figure.", v.Confidence, 100*v.Spread)
 	}
 
 	w("")
+	w("## How long it might take")
+	w("")
+	if rev := r.Reversion; rev.Fitted && rev.MedianMonths > 0 {
+		w("This multiple has returned to its own level with a half-life of %s, and from a gap this size half of simulated paths reach fair value within %s.",
+			months(rev.HalfLife), months(rev.MedianMonths))
+		w("")
+		w("- Half the gap closes in %s on the fitted speed, and %.0f%% of paths arrive inside a year.",
+			months(rev.HalfLife), 100*rev.WithinYear)
+		w("")
+	} else {
+		w("This multiple has not returned to its own level reliably enough to time, so no estimate is offered. A gap can stay open for years.")
+	}
+
 	w("## How much to trust this")
 	w("")
 	w("- The direction call is a weighted score of observable evidence. It sets the drift of the simulation, and drift is what dominates option returns, so treat the %+.1f%%/yr it implies as the assumption to argue with.", 100*r.AnnualDrift)
@@ -102,7 +108,7 @@ func Render(r *Result) string {
 		w("- Data warnings: %s.", strings.Join(r.Warnings, "; "))
 	}
 	w("")
-	w("Run with -detail for the volatility model, the implied-volatility surface, the contract screen and the full ranking.")
+	w("Run with -detail for the volatility model, the implied-volatility surface and the simulated distribution.")
 	return b.String()
 }
 
@@ -164,7 +170,6 @@ func RenderDetail(r *Result) string {
 	var b strings.Builder
 	w := func(format string, a ...any) { fmt.Fprintf(&b, format+"\n", a...) }
 	d := func(t time.Time) string { return t.Format("2006-01-02") }
-	pct := func(x float64) string { return fmt.Sprintf("%+.1f%%", 100*x) }
 
 	w("# %s model detail", r.Symbol)
 	w("")
@@ -233,7 +238,7 @@ func RenderDetail(r *Result) string {
 	w("| Expiry | Days | Market IV | Model forecast | Premium | Earnings ahead |")
 	w("|---|---|---|---|---|---|")
 	for _, v := range r.VolTerm {
-		w("| %s%s | %d | %.0f%% | %.0f%% | %+.1f pts | %s |", d(v.Expiry), monthlyMark(v.Monthly), v.Days, 100*v.MarketIV, 100*v.ForecastVol, 100*v.Premium, yesNo(v.EventAhead))
+		w("| %s%s | %d | %.0f%% | %.0f%% | %+.1f pts | %s |", d(v.Expiry), monthly(v.Monthly), v.Days, 100*v.MarketIV, 100*v.ForecastVol, 100*v.Premium, yesNo(v.EventAhead))
 	}
 	w("")
 	w("A positive premium means the option market is charging more volatility than the model forecasts, which is the usual state of affairs and the cost of being long options.")
@@ -252,62 +257,6 @@ func RenderDetail(r *Result) string {
 	}
 
 	w("")
-	w("## Contract screen (buying today)")
-	w("")
-	w("| Expiry | Strike | Delta | Mid | Market IV | Forecast vol | Vol edge | Model price | Expected return | P(profit) | P(2x) | Break-even drift | OI |")
-	w("|---|---|---|---|---|---|---|---|---|---|---|---|---|")
-	for _, s := range r.BuyNow {
-		c := s.Contract
-		w("| %s | %g | %.2f | %.2f | %.0f%% | %.0f%% | %+.1f pts | %.2f | %s | %.0f%% | %.0f%% | %s | %d |",
-			d(c.Expiry), c.Strike, c.Delta, c.MarketMid, 100*c.MarketIV, 100*c.ModelIV, 100*c.VolEdge, c.ModelPrice,
-			pct(s.Stats.MeanReturn), 100*s.Stats.PProfit, 100*s.Stats.PDoubled, breakEvenText(s.BreakEvenDrift), c.OpenInterest)
-	}
-	w("")
-	w("Vol edge is the model's forecast volatility minus the market's implied volatility. A negative edge means you are paying more volatility than the model expects to be delivered, which is the normal cost of owning options.")
-
-	w("")
-	w("## Ranked entry windows")
-	w("")
-	if len(r.Strategies) == 0 {
-		w("Nothing qualified.")
-	} else {
-		w("Each row is a commitment: watch for the trigger between the two dates, buy the named contract the first time it fires, hold to expiry. One row per trigger, each showing the date range and contract that served it best.")
-		w("")
-		w("| # | Window | Trigger | Buy | Fill prob | Growth | Kelly | Return if filled | Median | P(profit) | Expected value | Avg cost | Break-even drift |")
-		w("|---|---|---|---|---|---|---|---|---|---|---|---|---|")
-		for i, s := range r.Strategies {
-			w("| %d | %s to %s | %s | %s %g | %.0f%% | %+.4f | %.0f%% | %s | %s | %.0f%% | %s | %.2f | %s |",
-				i+1, d(s.Window.Start), d(s.Window.End), triggerText(s.Trigger, r.Spot),
-				d(s.Contract.Expiry), s.Contract.Strike, 100*s.Stats.PTrade,
-				s.Stats.GrowthRate, 100*s.Stats.KellyFraction, pct(s.Stats.MeanReturn),
-				pct(s.Stats.MedianReturn), 100*s.Stats.PProfit, pct(s.Stats.ExpectedValue),
-				s.Stats.MeanCost, breakEvenText(s.BreakEvenDrift))
-		}
-		w("")
-		w("Growth is expected log growth of capital when %.0f%% of it is committed to the trade, which is what the ranking maximises. Kelly is the stake that would maximise it; a zero there means no position size beats holding cash. Expected value is the fill probability times the return if filled, counting paths where you never trade as zero. Break-even drift is the annual return the stock needs for the plan to return nothing, which is the number to compare against your own view.", 100*RankingStake)
-		w("")
-		w("### Drift sensitivity")
-		w("")
-		w("The same plans, re-simulated under each assumed annual return for %s.", r.Symbol)
-		w("")
-		var head strings.Builder
-		head.WriteString("| # | Buy |")
-		for _, g := range r.DriftGrid {
-			fmt.Fprintf(&head, " %+.0f%%/yr |", 100*g)
-		}
-		w("%s", head.String())
-		w("|---|---|%s", strings.Repeat("---|", len(r.DriftGrid)))
-		for i, s := range r.Strategies {
-			var row strings.Builder
-			fmt.Fprintf(&row, "| %d | %s %g |", i+1, d(s.Contract.Expiry), s.Contract.Strike)
-			for _, v := range s.DriftCurve {
-				fmt.Fprintf(&row, " %s |", pct(v))
-			}
-			w("%s", row.String())
-		}
-	}
-
-	w("")
 	w("## Method and limitations")
 	w("")
 	w("- Volatility: GARCH(1,1), variance targeting, Gaussian likelihood, fitted on %d daily log returns.", r.GARCH.n())
@@ -315,7 +264,6 @@ func RenderDetail(r *Result) string {
 	w("- Paths: filtered historical simulation. Volatility clusters as the GARCH process dictates; shocks are drawn from the stock's own standardized residuals, so skew and fat tails survive; the earnings day carries an independent normal jump.")
 	w("- Pricing at entry: Black-Scholes on the fitted surface, which is held sticky in strike space, plus half the current bid-ask spread as slippage. The surface does not respond to the simulated path, so a plan that only pays off through a volatility spike is not being credited for one.")
 	w("- Payoff: European, held to expiry, no early exercise and no dividends.")
-	w("- Ranking: expected log growth at a %.0f%% stake rather than expected return, so a plan is not rewarded for being a lottery ticket. An entry must leave at least %d trading days to expiry.", 100*RankingStake, minRunway)
 	w("- Drift is the weakest input: a capped, shrunk trend estimate, not a forecast of news. The break-even drift and the sensitivity table are there so the reader can substitute their own view.")
 	w("- Trading-day counts ignore exchange holidays.")
 	w("- This is an experiment, built for fun. It is not financial advice and must not be used for any financial benefit.")
@@ -325,51 +273,38 @@ func RenderDetail(r *Result) string {
 // n is the estimation sample size.
 func (g GARCH) n() int { return len(g.Resid) }
 
-// buyNowStats finds how the same contract behaves when bought today.
-func buyNowStats(r *Result, c Contract) (Stats, bool) {
-	for _, s := range r.BuyNow {
-		if s.Contract.Strike == c.Strike && s.Contract.ExpiryIdx == c.ExpiryIdx {
-			return s.Stats, true
-		}
-	}
-	return Stats{}, false
-}
-
-// breakEvenText renders the drift a plan needs to return nothing, marking
-// the cases that fall outside the simulated grid.
-func breakEvenText(b BreakEven) string {
-	d := float64(b)
-	switch {
-	case math.IsInf(d, 1):
-		return fmt.Sprintf("above %+.0f%%/yr", 100*DriftGrid[len(DriftGrid)-1])
-	case math.IsInf(d, -1):
-		return fmt.Sprintf("below %+.0f%%/yr", 100*DriftGrid[0])
-	default:
-		return fmt.Sprintf("%+.1f%%/yr", 100*d)
-	}
-}
-
-func triggerText(t Trigger, spot float64) string {
-	switch t.Kind {
-	case TriggerDip:
-		return fmt.Sprintf("dip to %.2f (%.0f%%)", spot*t.Level, 100*(t.Level-1))
-	case TriggerBreakout:
-		return fmt.Sprintf("rise to %.2f (+%.0f%%)", spot*t.Level, 100*(t.Level-1))
-	default:
-		return "enter at open"
-	}
-}
-
-func monthlyMark(monthly bool) string {
-	if monthly {
-		return " (monthly)"
-	}
-	return ""
-}
-
 func yesNo(b bool) string {
 	if b {
 		return "yes"
 	}
 	return "no"
+}
+
+// monthly marks the standard monthly expiries, which carry the liquidity.
+func monthly(b bool) string {
+	if b {
+		return " (monthly)"
+	}
+	return ""
+}
+
+// pct renders a fraction as a signed percentage.
+func pct(x float64) string { return fmt.Sprintf("%+.1f%%", 100*x) }
+
+// dollars renders a share price the way a quote does.
+func dollars(v float64) string { return fmt.Sprintf("$%.2f", v) }
+
+// months renders a duration in whole months, or in years once quoting
+// months would be false precision.
+func months(m float64) string {
+	switch {
+	case m <= 0:
+		return "no estimate"
+	case m < 1.5:
+		return "about a month"
+	case m < 24:
+		return fmt.Sprintf("%.0f months", m)
+	default:
+		return fmt.Sprintf("%.1f years", m/12)
+	}
 }

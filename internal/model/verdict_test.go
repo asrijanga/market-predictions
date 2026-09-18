@@ -5,6 +5,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/asrijanga/market-predictions/internal/valuation"
 )
 
 func TestStanceThresholds(t *testing.T) {
@@ -33,7 +35,7 @@ func TestSignalDriftIsBounded(t *testing.T) {
 
 func TestSignalsSeparateBullAndBear(t *testing.T) {
 	p := testPack(t)
-	sigs, score := Signals(p, IVModel{SkewSlope: -0.15})
+	sigs, score := Signals(p, IVModel{SkewSlope: -0.15}, valuation.Result{})
 	if len(sigs) < 8 {
 		t.Fatalf("got %d signals", len(sigs))
 	}
@@ -113,4 +115,26 @@ func TestOrdinal(t *testing.T) {
 			t.Errorf("ordinal(%d) = %q, want %q", n, got, want)
 		}
 	}
+}
+
+// fixedSim builds a simulation from paths given explicitly, so a test can
+// state the distribution it wants rather than search for a seed producing
+// one.
+func fixedSim(paths [][]float64) *Sim {
+	h := len(paths[0]) - 1
+	s := &Sim{Paths: len(paths), Horizon: h, ratio: make([]float64, len(paths)*(h+1))}
+	for i, p := range paths {
+		copy(s.ratio[i*(h+1):], p)
+	}
+	return s
+}
+
+// flat is a path that jumps to v on the first step and stays there.
+func flat(n int, v float64) []float64 {
+	out := make([]float64, n)
+	for i := range out {
+		out[i] = v
+	}
+	out[0] = 1
+	return out
 }

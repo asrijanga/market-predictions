@@ -66,3 +66,58 @@ type Filing struct {
 	Description string    `json:"description,omitempty"`
 	Items       string    `json:"items,omitempty"`
 }
+
+// Fundamentals is what a company reports about itself, reduced to the
+// figures a valuation needs. Everything is per share unless the name says
+// otherwise, and a zero means the filing did not carry the line.
+type Fundamentals struct {
+	Symbol   string `json:"symbol"`
+	Sector   string `json:"sector,omitempty"`
+	Industry string `json:"industry,omitempty"`
+
+	// Shares is derived, not reported: market capitalisation over price.
+	Shares    float64 `json:"shares"`
+	MarketCap float64 `json:"market_cap"`
+
+	// TrailingEPS sums the last four reported quarters. ForwardEPS is the
+	// analysts' consensus for each coming fiscal year, nearest first.
+	TrailingEPS float64   `json:"trailing_eps"`
+	ForwardEPS  []float64 `json:"forward_eps,omitempty"`
+	// EPSEstimates counts the analysts behind the first forward year, and
+	// EPSDispersion is the high-low spread over the consensus. Both say how
+	// much weight a forecast deserves.
+	EPSEstimates  int     `json:"eps_estimates,omitempty"`
+	EPSDispersion float64 `json:"eps_dispersion,omitempty"`
+
+	// QuarterlyEPS holds the reported quarters, oldest first, which is what
+	// a trailing multiple is built from through time.
+	QuarterlyEPS []QuarterEPS `json:"quarterly_eps,omitempty"`
+
+	BookValuePerShare float64 `json:"book_value_per_share"`
+	DividendPerShare  float64 `json:"dividend_per_share"`
+
+	// Annual figures, most recent first.
+	Revenue         []float64 `json:"revenue,omitempty"`
+	NetIncome       []float64 `json:"net_income,omitempty"`
+	Equity          []float64 `json:"equity,omitempty"`
+	FreeCashFlow    []float64 `json:"free_cash_flow,omitempty"`
+	ReturnOnEquity  float64   `json:"return_on_equity"`
+	OperatingMargin float64   `json:"operating_margin"`
+	Debt            float64   `json:"debt"`
+	Cash            float64   `json:"cash"`
+
+	FiscalEnds []string `json:"fiscal_ends,omitempty"`
+}
+
+// QuarterEPS is one reported quarter.
+type QuarterEPS struct {
+	Period   string    `json:"period"`
+	End      time.Time `json:"end"`
+	Reported float64   `json:"reported"`
+}
+
+// HasEarnings reports whether there is enough to value the company on what
+// it earns rather than on its price alone.
+func (f Fundamentals) HasEarnings() bool {
+	return f.TrailingEPS > 0 || len(f.ForwardEPS) > 0
+}

@@ -13,7 +13,6 @@ import (
 	"fmt"
 	"io/fs"
 	"log"
-	"math"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -229,34 +228,24 @@ func userMessage(symbol string, err error) string {
 // View is everything the terminal draws, shaped for display rather than for
 // further computation.
 type View struct {
-	Symbol      string        `json:"symbol"`
-	AsOf        string        `json:"asOf"`
-	Spot        float64       `json:"spot"`
-	Stance      string        `json:"stance"`
-	Score       float64       `json:"score"`
-	Outlooks    []OutlookView `json:"outlooks"`
-	For         []SignalView  `json:"for"`
-	Against     []SignalView  `json:"against"`
-	Plan        *PlanView     `json:"plan,omitempty"`
-	Earnings    string        `json:"earnings,omitempty"`
-	ImpliedMove float64       `json:"impliedMove"`
-	Crush       float64       `json:"crush"`
-	BaseVol     float64       `json:"baseVol"`
-	Cached      bool          `json:"cached"`
-	Warnings    []string      `json:"warnings,omitempty"`
-	Elapsed     string        `json:"elapsed"`
-}
-
-// OutlookView is one forecast horizon.
-type OutlookView struct {
-	Name      string  `json:"name"`
-	Date      string  `json:"date"`
-	Direction string  `json:"direction"`
-	ProbUp    float64 `json:"probUp"`
-	Median    float64 `json:"median"`
-	Mean      float64 `json:"mean"`
-	Low       float64 `json:"low"`
-	High      float64 `json:"high"`
+	Symbol  string       `json:"symbol"`
+	AsOf    string       `json:"asOf"`
+	Spot    float64      `json:"spot"`
+	Stance  string       `json:"stance"`
+	Score   float64      `json:"score"`
+	For     []SignalView `json:"for"`
+	Against []SignalView `json:"against"`
+	// Fair is what the company looks worth on what it reports; Timing is
+	// how long the market has historically taken to agree.
+	Fair        *FairView   `json:"fair,omitempty"`
+	Timing      *TimingView `json:"timing,omitempty"`
+	Earnings    string      `json:"earnings,omitempty"`
+	ImpliedMove float64     `json:"impliedMove"`
+	Crush       float64     `json:"crush"`
+	BaseVol     float64     `json:"baseVol"`
+	Cached      bool        `json:"cached"`
+	Warnings    []string    `json:"warnings,omitempty"`
+	Elapsed     string      `json:"elapsed"`
 }
 
 // SignalView is one piece of evidence.
@@ -267,17 +256,32 @@ type SignalView struct {
 	Weight float64 `json:"weight"`
 }
 
-// PlanView is the best entry plan.
-type PlanView struct {
-	Trigger    string  `json:"trigger"`
-	Window     string  `json:"window"`
-	Expiry     string  `json:"expiry"`
-	Strike     float64 `json:"strike"`
-	FillProb   float64 `json:"fillProb"`
-	MeanReturn float64 `json:"meanReturn"`
-	ProbProfit float64 `json:"probProfit"`
-	BreakEven  string  `json:"breakEven"`
-	Cost       float64 `json:"cost"`
+// FairView is what the shares look worth, and how that was reached.
+type FairView struct {
+	Value      float64      `json:"value"`
+	Upside     float64      `json:"upside"`
+	Confidence string       `json:"confidence"`
+	Discount   float64      `json:"discount"`
+	Growth     float64      `json:"growth"`
+	Spread     float64      `json:"spread"`
+	TrailingPE float64      `json:"trailingPE,omitempty"`
+	ForwardPE  float64      `json:"forwardPE,omitempty"`
+	Methods    []MethodView `json:"methods,omitempty"`
+}
+
+// MethodView is one valuation model's answer.
+type MethodView struct {
+	Name   string  `json:"name"`
+	Value  float64 `json:"value"`
+	Weight float64 `json:"weight"`
+	Note   string  `json:"note"`
+}
+
+// TimingView is how long the gap has historically taken to close.
+type TimingView struct {
+	HalfLifeMonths float64 `json:"halfLifeMonths"`
+	MedianMonths   float64 `json:"medianMonths"`
+	WithinYear     float64 `json:"withinYear"`
 }
 
 // NewView condenses a model result into what the screen shows.
@@ -291,12 +295,6 @@ func NewView(p *pack.Pack, r *model.Result) *View {
 		v.Earnings = r.EarningsDate.Format(time.DateOnly)
 		v.Crush = r.IV.CrushPct(21)
 	}
-	for _, o := range r.Outlooks {
-		v.Outlooks = append(v.Outlooks, OutlookView{
-			Name: o.Name, Date: o.Date.Format(time.DateOnly), Direction: o.Direction,
-			ProbUp: o.ProbUp, Median: o.MedianReturn, Mean: o.MeanReturn, Low: o.Low, High: o.High,
-		})
-	}
 	for _, s := range r.Signals {
 		sv := SignalView{Name: s.Name, Detail: s.Detail, Score: s.Score, Weight: s.Weight}
 		switch {
@@ -306,14 +304,31 @@ func NewView(p *pack.Pack, r *model.Result) *View {
 			v.Against = append(v.Against, sv)
 		}
 	}
-	if len(r.Strategies) > 0 {
-		b := r.Strategies[0]
-		v.Plan = &PlanView{
-			Trigger: triggerLabel(b.Trigger, r.Spot),
-			Window:  b.Window.Start.Format("Jan 2") + " to " + b.Window.End.Format("Jan 2"),
-			Expiry:  b.Contract.Expiry.Format(time.DateOnly), Strike: b.Contract.Strike,
-			FillProb: b.Stats.PTrade, MeanReturn: b.Stats.MeanReturn, ProbProfit: b.Stats.PProfit,
-			BreakEven: breakEvenLabel(float64(b.BreakEvenDrift)), Cost: b.Stats.MeanCost,
+	if r.FairValue > 0 {
+		f := &FairView{
+			Value: r.FairValue, Upside: r.Upside,
+			Confidence: r.Valuation.Confidence,
+			Spread:     r.Valuation.Spread,
+			Discount:   r.Valuation.DiscountRate,
+			Growth:     r.Valuation.Growth,
+			TrailingPE: r.Valuation.TrailingPE,
+			ForwardPE:  r.Valuation.ForwardPE,
+		}
+		for _, e := range r.Valuation.Estimates {
+			f.Methods = append(f.Methods, MethodView{
+				Name: e.Method, Value: e.Value, Weight: e.Weight, Note: e.Note,
+			})
+		}
+		v.Fair = f
+	}
+	// A timing estimate is only offered where the multiple has actually
+	// reverted; without that there is no half-life to quote and a number
+	// would be invention.
+	if rev := r.Reversion; rev.Fitted && rev.MedianMonths > 0 {
+		v.Timing = &TimingView{
+			HalfLifeMonths: rev.HalfLife,
+			MedianMonths:   rev.MedianMonths,
+			WithinYear:     rev.WithinYear,
 		}
 	}
 	return v
@@ -333,28 +348,6 @@ func modelWarnings(all []string) []string {
 		out = append(out, w)
 	}
 	return out
-}
-
-func triggerLabel(t model.Trigger, spot float64) string {
-	switch t.Kind {
-	case model.TriggerDip:
-		return fmt.Sprintf("DIP TO %.2f", spot*t.Level)
-	case model.TriggerBreakout:
-		return fmt.Sprintf("RISE TO %.2f", spot*t.Level)
-	default:
-		return "ENTER AT OPEN"
-	}
-}
-
-func breakEvenLabel(d float64) string {
-	switch {
-	case math.IsInf(d, 1):
-		return "OFF THE SCALE"
-	case math.IsInf(d, -1):
-		return "ANY DRIFT"
-	default:
-		return fmt.Sprintf("%+.1f%%/YR", 100*d)
-	}
 }
 
 // WriteConfig tells a published front end where to send its analyses.

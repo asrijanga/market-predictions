@@ -4,7 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
 <title>MKTPREDICT</title>
-<meta name="description" content="A quantitative read on a listed stock: bullish or bearish, where it might be next quarter and next year, and what the evidence is. An experiment, not financial advice.">
+<meta name="description" content="What a listed stock looks worth on what it reports, how far the price sits from that, and how long the gap has historically taken to close. An experiment, not financial advice.">
 <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'><rect width='16' height='16' rx='3' fill='%23070b0e'/><path d='M3 11l3-3 2.5 2L13 5' stroke='%234ade80' stroke-width='1.6' fill='none' stroke-linecap='round' stroke-linejoin='round'/></svg>">
 <link rel="stylesheet" href="./style.css">
 </head>
@@ -44,10 +44,13 @@
 </main>
 
 <footer class="footer wrap">
-  <p>Every reading is produced by a fitted model &mdash; an OLS trend, a GARCH(1,1)
-     volatility forecast, an implied-volatility surface and 20,000 simulated price
-     paths &mdash; from public market data. No opinions, no news, no forecasts from anyone.</p>
-  <p>Published figures are computed when the site is built, not live.</p>
+  <p>Every reading is produced by fitted models over public filings and market
+     data: a residual income model, the multiple these shares have actually
+     traded on, and a discount of the analysts' consensus earnings &mdash; blended,
+     then timed against how quickly this company's valuation has historically
+     returned to its own level.</p>
+  <p>No opinions, no news, no forecasts from anyone. Figures are computed when
+     you ask for them.</p>
 </footer>
 
 <script type="module" src="./app.js"></script>
